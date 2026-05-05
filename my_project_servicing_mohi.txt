@@ -1,0 +1,2345 @@
+package com.smelend.smelendbackend.controller.servicing;
+
+import com.smelend.smelendbackend.dto.ApiResponse;
+import com.smelend.smelendbackend.dto.servicing.repayment.PostRepaymentRequest;
+import com.smelend.smelendbackend.dto.servicing.repayment.RepaymentResponse;
+import com.smelend.smelendbackend.service.servicing.RepaymentService;
+import jakarta.validation.Valid;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+
+@RestController
+@RequestMapping("/servicing/repayments")
+public class RepaymentController {
+
+    private final RepaymentService repaymentService;
+
+    public RepaymentController(RepaymentService repaymentService) {
+        this.repaymentService = repaymentService;
+    }
+
+    // ── WRITE: SERVICING/ADMIN only — granular check enforced in RepaymentService ──
+
+    @PostMapping
+    @PreAuthorize("hasAnyRole('SERVICING','ADMIN')")
+    public ApiResponse<RepaymentResponse> post(@Valid @RequestBody PostRepaymentRequest req) {
+        return ApiResponse.ok("Repayment posted", repaymentService.post(req));
+    }
+
+    // ── READ: Servicing, Applicant, Agent, Admin (monitoring) ─────────
+
+    @GetMapping("/loan-accounts/{loanAccountId}")
+    @PreAuthorize("hasAnyRole('SERVICING','APPLICANT','AGENT','ADMIN')")
+    public ApiResponse<List<RepaymentResponse>> list(@PathVariable Long loanAccountId) {
+        return ApiResponse.ok("Repayments fetched", repaymentService.list(loanAccountId));
+    }
+}
+================================================================================================
+package com.smelend.smelendbackend.controller.servicing;
+
+import com.smelend.smelendbackend.dto.ApiResponse;
+import com.smelend.smelendbackend.dto.servicing.schedule.ScheduleResponse;
+import com.smelend.smelendbackend.dto.operations.disbursement.LoanAccountResponse;
+import com.smelend.smelendbackend.entity.LoanAccount;
+import com.smelend.smelendbackend.repository.LoanAccountRepository;
+import com.smelend.smelendbackend.exception.ApiException;
+import org.springframework.http.HttpStatus;
+import com.smelend.smelendbackend.service.servicing.EmiScheduleService;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+
+@RestController
+@RequestMapping("/servicing/loan-accounts/{loanAccountId}/schedule")
+@PreAuthorize("hasAnyRole('SERVICING','APPLICANT','AGENT','ADMIN','OPERATIONS')")
+public class ScheduleController {
+
+    private final EmiScheduleService    scheduleService;
+    private final LoanAccountRepository loanRepo;
+
+    public ScheduleController(EmiScheduleService scheduleService,
+                           LoanAccountRepository loanRepo) {
+        this.scheduleService = scheduleService;
+        this.loanRepo        = loanRepo;
+    }
+
+    @GetMapping
+    public ApiResponse<List<ScheduleResponse>> list(@PathVariable Long loanAccountId) {
+        return ApiResponse.ok("Schedule fetched", scheduleService.list(loanAccountId));
+    }
+
+}
+
+
+@RestController
+@RequestMapping("/servicing/loan-accounts")
+class LoanAccountByApplicationController {
+
+    private final LoanAccountRepository loanRepo;
+
+    LoanAccountByApplicationController(LoanAccountRepository loanRepo) {
+        this.loanRepo = loanRepo;
+    }
+
+
+    @GetMapping("/by-application/{appId}")
+    @PreAuthorize("hasAnyRole('APPLICANT','AGENT','ADMIN','SERVICING','OPERATIONS','UNDERWRITER')")
+    public ApiResponse<LoanAccountResponse> getByApplication(@PathVariable Long appId) {
+        LoanAccount loan = loanRepo.findByApplication_ApplicationId(appId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND,
+                        "No loan account for application #" + appId + ". Not yet disbursed."));
+        return ApiResponse.ok("Loan account found", LoanAccountResponse.builder()
+                .loanAccountId(loan.getLoanAccountId())
+                .applicationId(loan.getApplication().getApplicationId())
+                .accountNumber(loan.getAccountNumber())
+                .principalSanctioned(loan.getPrincipalSanctioned())
+                .interestRate(loan.getInterestRate())
+                .tenorMonths(loan.getTenorMonths())
+                .startDate(loan.getStartDate())
+                .status(loan.getStatus())
+                .build());
+    }
+}
+==========================================================================================================
+
+@RestController
+@RequestMapping("/servicing/loan-accounts")
+class LoanAccountByApplicationController {
+
+    private final LoanAccountRepository loanRepo;
+
+    LoanAccountByApplicationController(LoanAccountRepository loanRepo) {
+        this.loanRepo = loanRepo;
+    }
+
+
+    @GetMapping("/by-application/{appId}")
+    @PreAuthorize("hasAnyRole('APPLICANT','AGENT','ADMIN','SERVICING','OPERATIONS','UNDERWRITER')")
+    public ApiResponse<LoanAccountResponse> getByApplication(@PathVariable Long appId) {
+        LoanAccount loan = loanRepo.findByApplication_ApplicationId(appId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND,
+                        "No loan account for application #" + appId + ". Not yet disbursed."));
+        return ApiResponse.ok("Loan account found", LoanAccountResponse.builder()
+                .loanAccountId(loan.getLoanAccountId())
+                .applicationId(loan.getApplication().getApplicationId())
+                .accountNumber(loan.getAccountNumber())
+                .principalSanctioned(loan.getPrincipalSanctioned())
+                .interestRate(loan.getInterestRate())
+                .tenorMonths(loan.getTenorMonths())
+                .startDate(loan.getStartDate())
+                .status(loan.getStatus())
+                .build());
+    }
+}
+====================================================================================================
+package com.smelend.smelendbackend.dto.servicing.repayment;
+
+import com.smelend.smelendbackend.entity.enums.RepaymentMode;
+import com.smelend.smelendbackend.validation.DateWithinWindow;
+import jakarta.validation.constraints.*;
+import lombok.Getter;
+import lombok.Setter;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+
+@Getter @Setter
+public class PostRepaymentRequest {
+
+    @NotNull
+    private Long loanAccountId;
+
+
+    private Long scheduleId;
+
+    @DecimalMin(value = "0.0", inclusive = false, message = "amount must be > 0")
+    private BigDecimal amount;   // optional when scheduleId is given
+
+    @NotNull
+    private RepaymentMode mode;
+
+    private String referenceNo;
+
+    @NotNull
+    @DateWithinWindow(days = 5, message = "Payment date must be within ±5 days of today")
+    private LocalDate paymentDate;
+}
+===============================================================================================
+package com.smelend.smelendbackend.dto.servicing.repayment;
+
+import com.smelend.smelendbackend.entity.enums.RepaymentMode;
+import lombok.*;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+
+@Getter @Setter
+@NoArgsConstructor @AllArgsConstructor @Builder
+public class RepaymentResponse {
+
+    private Long repaymentId;
+    private Long loanAccountId;
+
+    private BigDecimal amount;
+    private RepaymentMode mode;
+    private String referenceNo;
+
+    private LocalDate paymentDate;
+    private LocalDateTime createdDate;
+}
+=====================================================================================================
+package com.smelend.smelendbackend.dto.servicing.schedule;
+
+import com.smelend.smelendbackend.entity.enums.InstallmentStatus;
+import lombok.*;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class ScheduleResponse {
+
+    private Long scheduleId;
+    private Long loanAccountId;
+
+    private Integer installmentNo;
+    private LocalDate dueDate;
+
+    private BigDecimal principalDue;
+    private BigDecimal interestDue;
+    private BigDecimal totalDue;
+
+    private BigDecimal amountPaid;
+    private BigDecimal balanceDue;
+
+    private InstallmentStatus status;
+
+
+    private BigDecimal penalAmount;
+}
+=============================================================================
+package com.smelend.smelendbackend.entity;
+
+import com.smelend.smelendbackend.entity.enums.RepaymentMode;
+import jakarta.persistence.*;
+import lombok.*;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+
+@Entity
+@Table(name = "repayment")
+@Getter @Setter
+@NoArgsConstructor @AllArgsConstructor @Builder
+public class Repayment {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long repaymentId;
+
+    @ManyToOne(optional = false)
+    @JoinColumn(name = "loan_account_id")
+    private LoanAccount loanAccount;
+
+    @Column(nullable = false, precision = 14, scale = 2)
+    private BigDecimal amount;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private RepaymentMode mode;
+
+    @Column(length = 100)
+    private String referenceNo;
+
+    @Column(nullable = false)
+    private LocalDate paymentDate;
+
+    @Column(nullable = false)
+    private LocalDateTime createdDate;
+
+    @PrePersist
+    void prePersist() { if (createdDate == null) createdDate = java.time.LocalDateTime.now(); }
+}
+==========================================================================
+package com.smelend.smelendbackend.entity;
+
+import com.smelend.smelendbackend.entity.enums.InstallmentStatus;
+import jakarta.persistence.*;
+import lombok.*;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+
+@Entity
+@Table(name = "repayment_schedule", indexes = {
+    @Index(name = "idx_sched_loan", columnList = "loan_account_id"),
+    @Index(name = "idx_sched_status", columnList = "status")
+})
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class RepaymentSchedule {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long scheduleId;
+// many repayment schedule linked to one repayment schedule
+    @ManyToOne(optional = false, fetch = FetchType.EAGER)
+    @JoinColumn(name = "loan_account_id", nullable = false)
+    private LoanAccount loanAccount;
+
+    @Column(nullable = false)
+    private Integer installmentNo;
+
+    @Column(nullable = false)
+    private LocalDate dueDate;
+
+    @Column(precision = 15, scale = 2)
+    private BigDecimal principalDue;
+
+    @Column(precision = 15, scale = 2)
+    private BigDecimal interestDue;
+
+    @Column(nullable = false, precision = 15, scale = 2)
+    private BigDecimal totalDue;
+
+    @Column(nullable = false, precision = 15, scale = 2)
+    private BigDecimal amountPaid;
+
+    @Column(nullable = false, precision = 15, scale = 2)
+    private BigDecimal balanceDue;
+
+    //handle null pointer
+    @Builder.Default
+    @Column(precision = 10, scale = 2)
+    private BigDecimal penalAmount = java.math.BigDecimal.ZERO;
+
+    @Enumerated(EnumType.STRING)
+
+    @Column(nullable = false, length = 20)
+    private InstallmentStatus status;
+}
+==================================================================================
+package com.smelend.smelendbackend.exception;
+
+import com.smelend.smelendbackend.dto.ApiResponse;
+import jakarta.validation.ConstraintViolationException;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+import java.util.stream.Collectors;
+
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+
+    @ExceptionHandler(ApiException.class)
+    public ResponseEntity<ApiResponse<Void>> handle(ApiException ex) {
+        return ResponseEntity.status(ex.getStatus()).body(ApiResponse.fail(ex.getMessage()));
+    }
+
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ApiResponse<Void>> handle(MethodArgumentNotValidException ex) {
+        String msg = ex.getBindingResult().getFieldErrors().stream()
+                .map(e -> e.getField() + ": " + e.getDefaultMessage())
+                .collect(Collectors.joining(", "));
+        return ResponseEntity.badRequest().body(ApiResponse.fail(msg));
+    }
+
+    @ExceptionHandler(ConstraintViolationException.class)
+    public ResponseEntity<ApiResponse<Void>> handle(ConstraintViolationException ex) {
+        return ResponseEntity.badRequest().body(ApiResponse.fail(ex.getMessage()));
+    }
+
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<ApiResponse<Void>> handle(Exception ex) {
+        return ResponseEntity.internalServerError().body(ApiResponse.fail("Internal error: " + ex.getMessage()));
+    }
+}
+
+=================================================================================================================
+package com.smelend.smelendbackend.exception;
+
+import org.springframework.http.HttpStatus;
+
+public class ApiException extends RuntimeException {
+    private final HttpStatus status;
+
+    public ApiException(HttpStatus status, String message) {
+        super(message);
+        this.status = status;
+    }
+
+    public HttpStatus getStatus() {
+        return status;
+    }
+}
+
+===========================================================================================================
+package com.smelend.smelendbackend.repository;
+
+import com.smelend.smelendbackend.entity.RepaymentSchedule;
+import com.smelend.smelendbackend.entity.enums.InstallmentStatus;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+ 
+import java.time.LocalDate;
+import java.util.List;
+ 
+public interface RepaymentScheduleRepository extends JpaRepository<RepaymentSchedule, Long> {
+ 
+    List<RepaymentSchedule> findByLoanAccount_LoanAccountIdOrderByInstallmentNoAsc(Long loanAccountId);
+ 
+
+    @Query("SELECT s FROM RepaymentSchedule s "
+         + "WHERE s.loanAccount.loanAccountId = :loanId "
+         + "AND s.status <> :paidStatus "
+         + "ORDER BY s.installmentNo ASC")
+    List<RepaymentSchedule> findUnpaidByLoan(@Param("loanId") Long loanId,
+                                              @Param("paidStatus") InstallmentStatus paidStatus);
+ 
+    /**
+     * Distinct loan account IDs that have at least one overdue unpaid installment.
+     * UPDATED: Changed < to <= to catch installments due today for demo purposes.
+     */
+    @Query("SELECT DISTINCT s.loanAccount.loanAccountId FROM RepaymentSchedule s "
+         + "WHERE s.dueDate <= :today AND s.status <> :paidStatus")
+    List<Long> findAllOverdueLoanIds(@Param("today") LocalDate today,
+                                     @Param("paidStatus") InstallmentStatus paidStatus);
+ 
+    /**
+     * All overdue installments across all loans, with loanAccount eagerly joined.
+     * UPDATED: Changed < to <= to catch installments due today for demo purposes.
+     */
+    @Query("SELECT s FROM RepaymentSchedule s JOIN FETCH s.loanAccount "
+         + "WHERE s.dueDate <= :today AND s.status <> :paidStatus")
+    List<RepaymentSchedule> findAllOverdue(@Param("today") LocalDate today,
+                                           @Param("paidStatus") InstallmentStatus paidStatus);
+ 
+    /** * Overdue installments for a specific loan 
+     * UPDATED: Changed < to <= to catch installments due today for demo purposes.
+     */
+    @Query("SELECT s FROM RepaymentSchedule s "
+         + "WHERE s.loanAccount.loanAccountId = :loanId "
+         + "AND s.dueDate <= :today AND s.status <> :paidStatus")
+    List<RepaymentSchedule> findOverdueByLoan(@Param("loanId") Long loanId,
+                                               @Param("today") LocalDate today,
+                                               @Param("paidStatus") InstallmentStatus paidStatus);
+}
+=============================================================================================================
+package com.smelend.smelendbackend.repository;
+
+import com.smelend.smelendbackend.entity.Repayment;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.util.List;
+
+public interface RepaymentRepository extends JpaRepository<Repayment, Long> {
+    List<Repayment> findByLoanAccount_LoanAccountIdOrderByPaymentDateDesc(Long loanAccountId);
+}
+=============================================================
+package com.smelend.smelendbackend.service.servicing;
+
+import com.smelend.smelendbackend.dto.servicing.schedule.ScheduleResponse;
+import com.smelend.smelendbackend.entity.LoanAccount;
+import com.smelend.smelendbackend.entity.RepaymentSchedule;
+import com.smelend.smelendbackend.entity.enums.InstallmentStatus;
+import com.smelend.smelendbackend.exception.ApiException;
+import com.smelend.smelendbackend.repository.LoanAccountRepository;
+import com.smelend.smelendbackend.repository.RepaymentScheduleRepository;
+import com.smelend.smelendbackend.service.collections.DpdService;
+import com.smelend.smelendbackend.service.servicing.PenalSchedulingService;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Service;
+
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.List;
+
+@Service
+public class EmiScheduleService {
+
+    private final LoanAccountRepository loanRepo;
+    private final RepaymentScheduleRepository scheduleRepo;
+    private final DpdService dpdService;
+    private final PenalSchedulingService penalSchedulingService;
+
+    public EmiScheduleService(LoanAccountRepository loanRepo,
+                              RepaymentScheduleRepository scheduleRepo,
+                              DpdService dpdService,
+                              PenalSchedulingService penalSchedulingService) {
+        this.loanRepo = loanRepo;
+        this.scheduleRepo = scheduleRepo;
+        this.dpdService = dpdService;
+        this.penalSchedulingService = penalSchedulingService;
+    }
+
+    public List<ScheduleResponse> generateIfNotExists(Long loanAccountId) {
+        LoanAccount loan = loanRepo.findById(loanAccountId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Loan account not found"));
+
+        List<RepaymentSchedule> existing =
+                scheduleRepo.findByLoanAccount_LoanAccountIdOrderByInstallmentNoAsc(loanAccountId);
+
+        if (!existing.isEmpty()) {
+            refreshDelinquencyAndPenal(loan);
+            return existing.stream().map(this::toDto).toList();
+        }
+
+        BigDecimal principal = loan.getPrincipalSanctioned();
+        int n = loan.getTenorMonths();
+
+        BigDecimal annualRate = loan.getInterestRate();
+        BigDecimal monthlyRate = annualRate.divide(BigDecimal.valueOf(12), 10, RoundingMode.HALF_UP)
+                .divide(BigDecimal.valueOf(100), 10, RoundingMode.HALF_UP);
+
+        BigDecimal principalPerMonth = principal.divide(BigDecimal.valueOf(n), 2, RoundingMode.HALF_UP);
+
+        List<RepaymentSchedule> rows = new ArrayList<>();
+        BigDecimal outstanding = principal;
+        LocalDate due = loan.getStartDate().plusMonths(1);
+
+        for (int i = 1; i <= n; i++) {
+            BigDecimal interest = outstanding.multiply(monthlyRate).setScale(2, RoundingMode.HALF_UP);
+            BigDecimal total = principalPerMonth.add(interest).setScale(2, RoundingMode.HALF_UP);
+
+            RepaymentSchedule s = RepaymentSchedule.builder()
+                    .loanAccount(loan)
+                    .installmentNo(i)
+                    .dueDate(due)
+                    .principalDue(principalPerMonth)
+                    .interestDue(interest)
+                    .totalDue(total)
+                    .amountPaid(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP))
+                    .balanceDue(total)
+                    .status(InstallmentStatus.DUE)
+                    .build();
+
+            rows.add(s);
+
+            outstanding = outstanding.subtract(principalPerMonth).max(BigDecimal.ZERO);
+            due = due.plusMonths(1);
+        }
+
+        scheduleRepo.saveAll(rows);
+
+        refreshDelinquencyAndPenal(loan);
+
+        return rows.stream().map(this::toDto).toList();
+    }
+
+    public List<ScheduleResponse> list(Long loanAccountId) {
+        LoanAccount loan = loanRepo.findById(loanAccountId)
+            .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Loan account not found"));
+        refreshDelinquencyAndPenal(loan);
+
+        return scheduleRepo.findByLoanAccount_LoanAccountIdOrderByInstallmentNoAsc(loanAccountId)
+                .stream()
+                .map(this::toDto)
+                .toList();
+    }
+
+    private void refreshDelinquencyAndPenal(LoanAccount loan) {
+        if (dpdService != null) {
+            dpdService.computeAndUpsert(loan.getLoanAccountId());
+        }
+        if (penalSchedulingService != null) {
+            penalSchedulingService.processLoan(loan, LocalDate.now());
+        }
+    }
+
+    private ScheduleResponse toDto(RepaymentSchedule r) {
+        return ScheduleResponse.builder()
+                .scheduleId(r.getScheduleId())
+                .loanAccountId(r.getLoanAccount() != null ? r.getLoanAccount().getLoanAccountId() : null)
+                .installmentNo(r.getInstallmentNo())
+                .dueDate(r.getDueDate())
+                .principalDue(r.getPrincipalDue())
+                .interestDue(r.getInterestDue())
+                .totalDue(r.getTotalDue())
+                .amountPaid(r.getAmountPaid())
+                .balanceDue(r.getBalanceDue())
+                .status(r.getStatus())
+                .penalAmount(r.getPenalAmount())
+                .build();
+    }
+}
+======================================================================
+package com.smelend.smelendbackend.service.servicing;
+
+import com.smelend.smelendbackend.dto.servicing.repayment.PostRepaymentRequest;
+import com.smelend.smelendbackend.dto.servicing.repayment.RepaymentResponse;
+import com.smelend.smelendbackend.entity.LoanAccount;
+import com.smelend.smelendbackend.entity.Repayment;
+import com.smelend.smelendbackend.entity.RepaymentSchedule;
+import com.smelend.smelendbackend.entity.enums.InstallmentStatus;
+import com.smelend.smelendbackend.entity.enums.LoanAccountStatus;
+import com.smelend.smelendbackend.exception.ApiException;
+import com.smelend.smelendbackend.repository.LoanAccountRepository;
+import com.smelend.smelendbackend.repository.RepaymentRepository;
+import com.smelend.smelendbackend.repository.RepaymentScheduleRepository;
+import com.smelend.smelendbackend.service.collections.DpdService;
+import com.smelend.smelendbackend.service.common.CurrentUserService;
+import com.smelend.smelendbackend.service.notification.NotificationService;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.List;
+
+@Service
+public class RepaymentService {
+
+    private final LoanAccountRepository          loanRepo;
+    private final RepaymentRepository            repayRepo;
+    private final RepaymentScheduleRepository    scheduleRepo;
+    private final DpdService                     dpdService;
+    private final NotificationService            notificationService;
+    private final PenalSchedulingService         penalSchedulingService;
+    private final CurrentUserService             currentUserService;
+
+    public RepaymentService(LoanAccountRepository loanRepo,
+                            RepaymentRepository repayRepo,
+                            RepaymentScheduleRepository scheduleRepo,
+                            DpdService dpdService,
+                            NotificationService notificationService,
+                            PenalSchedulingService penalSchedulingService,
+                            CurrentUserService currentUserService) {
+        this.loanRepo             = loanRepo;
+        this.repayRepo            = repayRepo;
+        this.scheduleRepo         = scheduleRepo;
+        this.dpdService           = dpdService;
+        this.notificationService  = notificationService;
+        this.penalSchedulingService = penalSchedulingService;
+        this.currentUserService   = currentUserService;
+    }
+
+    @Transactional
+    public RepaymentResponse post(PostRepaymentRequest req) {
+        // ── Service-level role gate: SERVICING or ADMIN only ─────────────────
+        if (!currentUserService.hasAnyRole("SERVICING", "ADMIN")) {
+            throw new ApiException(HttpStatus.FORBIDDEN,
+                    "Only SERVICING/ADMIN can post repayments");
+        }
+
+        LoanAccount loan = loanRepo.findById(req.getLoanAccountId())
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Loan account not found"));
+
+        if (loan.getStatus() != LoanAccountStatus.ACTIVE) {
+            throw new ApiException(HttpStatus.BAD_REQUEST,
+                    "Repayments can only be posted to ACTIVE loan accounts. Status: " + loan.getStatus());
+        }
+
+        // ── Resolve amount: from scheduleId (auto) or explicit field ─────────
+        BigDecimal amount;
+        Long targetScheduleId = null;
+
+        if (req.getScheduleId() != null) {
+            RepaymentSchedule targetSlot = scheduleRepo.findById(req.getScheduleId())
+                    .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND,
+                            "Schedule row #" + req.getScheduleId() + " not found"));
+
+            if (!targetSlot.getLoanAccount().getLoanAccountId().equals(req.getLoanAccountId())) {
+                throw new ApiException(HttpStatus.BAD_REQUEST,
+                        "Schedule #" + req.getScheduleId() + " does not belong to loan account #"
+                        + req.getLoanAccountId());
+            }
+            if (targetSlot.getStatus() == InstallmentStatus.PAID) {
+                throw new ApiException(HttpStatus.BAD_REQUEST,
+                        "Installment #" + targetSlot.getInstallmentNo() + " is already PAID.");
+            }
+
+            // Auto-amount = balance remaining on this specific installment
+            BigDecimal balance = targetSlot.getBalanceDue() != null
+                    ? targetSlot.getBalanceDue()
+                    : targetSlot.getTotalDue();
+            amount = balance.setScale(2, RoundingMode.HALF_UP);
+            targetScheduleId = req.getScheduleId();
+        } else {
+            if (req.getAmount() == null || req.getAmount().compareTo(BigDecimal.ZERO) <= 0) {
+                throw new ApiException(HttpStatus.BAD_REQUEST,
+                        "Either scheduleId (auto-amount) or an explicit amount > 0 must be provided.");
+            }
+            amount = req.getAmount().setScale(2, RoundingMode.HALF_UP);
+
+            // ── Overpayment guard ─────────────────────────────────────────────
+            BigDecimal outstandingBalance = scheduleRepo
+                    .findUnpaidByLoan(loan.getLoanAccountId(), InstallmentStatus.PAID)
+                    .stream()
+                    .map(s -> s.getBalanceDue() != null ? s.getBalanceDue() : s.getTotalDue())
+                    .reduce(BigDecimal.ZERO, BigDecimal::add)
+                    .setScale(2, RoundingMode.HALF_UP);
+
+            if (amount.compareTo(outstandingBalance) > 0) {
+                throw new ApiException(HttpStatus.BAD_REQUEST,
+                        "Payment amount ₹" + amount + " exceeds outstanding balance ₹" + outstandingBalance
+                        + ". Please enter an amount ≤ the outstanding balance.");
+            }
+        }
+
+        Repayment saved = repayRepo.save(Repayment.builder()
+                .loanAccount(loan)
+                .amount(amount)
+                .mode(req.getMode())
+                .referenceNo(req.getReferenceNo())
+                .paymentDate(req.getPaymentDate())
+                .createdDate(LocalDateTime.now())
+                .build());
+
+        // ── Allocate to schedule ──────────────────────────────────────────────
+        if (targetScheduleId != null) {
+            // Schedule-targeted: mark exactly this slot as PAID
+            allocateToSpecificSchedule(targetScheduleId, amount, req.getPaymentDate());
+        } else {
+            // Undirected: waterfall allocation across all DUE slots
+            allocateWaterfall(loan.getLoanAccountId(), amount, req.getPaymentDate());
+        }
+
+        dpdService.computeAndUpsert(loan.getLoanAccountId());
+        penalSchedulingService.processLoan(loan, req.getPaymentDate());
+
+        // Notify applicant
+        if (loan.getApplication() != null && loan.getApplication().getCreatedBy() != null) {
+            notificationService.notifyRepaymentReceived(
+                    loan.getApplication().getCreatedBy().getEmail(),
+                    loan.getApplication().getCreatedBy().getFullName(),
+                    amount.toPlainString(),
+                    saved.getReferenceNo() != null ? saved.getReferenceNo() : "#" + saved.getRepaymentId());
+        }
+
+        return toDto(saved);
+    }
+
+    public List<RepaymentResponse> list(Long loanAccountId) {
+        loanRepo.findById(loanAccountId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Loan account not found"));
+        return repayRepo.findByLoanAccount_LoanAccountIdOrderByPaymentDateDesc(loanAccountId)
+                .stream().map(this::toDto).toList();
+    }
+
+    // ── Private: targeted allocation (schedule-id driven) ─────────────────
+
+    private void allocateToSpecificSchedule(Long scheduleId, BigDecimal amount, LocalDate paymentDate) {
+        RepaymentSchedule s = scheduleRepo.findById(scheduleId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Schedule row not found"));
+
+        BigDecimal balance = s.getBalanceDue() != null ? s.getBalanceDue() : s.getTotalDue();
+        BigDecimal allocation = amount.min(balance).setScale(2, RoundingMode.HALF_UP);
+
+        BigDecimal alreadyPaid = s.getAmountPaid() != null ? s.getAmountPaid() : BigDecimal.ZERO;
+        BigDecimal newPaid    = alreadyPaid.add(allocation).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal newBalance = balance.subtract(allocation).setScale(2, RoundingMode.HALF_UP);
+
+        s.setAmountPaid(newPaid);
+        s.setBalanceDue(newBalance);
+        s.setStatus(newBalance.compareTo(BigDecimal.ZERO) <= 0
+                ? InstallmentStatus.PAID
+                : (paymentDate != null && s.getDueDate() != null && paymentDate.isAfter(s.getDueDate())
+                        ? InstallmentStatus.OVERDUE : InstallmentStatus.DUE));
+        scheduleRepo.save(s);
+    }
+
+    // ── Private: waterfall allocation (no scheduleId given) ───────────────
+
+    private void allocateWaterfall(Long loanAccountId, BigDecimal amount, LocalDate paymentDate) {
+        BigDecimal remaining = amount.setScale(2, RoundingMode.HALF_UP);
+
+        List<RepaymentSchedule> schedules =
+                scheduleRepo.findByLoanAccount_LoanAccountIdOrderByInstallmentNoAsc(loanAccountId);
+
+        for (RepaymentSchedule s : schedules) {
+            if (remaining.compareTo(BigDecimal.ZERO) <= 0) break;
+
+            BigDecimal balance = s.getBalanceDue() != null ? s.getBalanceDue()
+                    : (s.getTotalDue() != null ? s.getTotalDue() : BigDecimal.ZERO);
+
+            // Already fully paid — ensure status is PAID and move on
+            if (balance.compareTo(BigDecimal.ZERO) <= 0) {
+                if (s.getStatus() != InstallmentStatus.PAID) {
+                    s.setAmountPaid(s.getTotalDue());
+                    s.setBalanceDue(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP));
+                    s.setStatus(InstallmentStatus.PAID);
+                    scheduleRepo.save(s);
+                }
+                continue;
+            }
+
+            BigDecimal allocation = remaining.min(balance).setScale(2, RoundingMode.HALF_UP);
+            BigDecimal alreadyPaid = s.getAmountPaid() != null ? s.getAmountPaid() : BigDecimal.ZERO;
+            BigDecimal newPaid    = alreadyPaid.add(allocation).setScale(2, RoundingMode.HALF_UP);
+            BigDecimal newBalance = balance.subtract(allocation).setScale(2, RoundingMode.HALF_UP);
+
+            s.setAmountPaid(newPaid);
+            s.setBalanceDue(newBalance);
+            s.setStatus(newBalance.compareTo(BigDecimal.ZERO) <= 0
+                    ? InstallmentStatus.PAID
+                    : (paymentDate != null && s.getDueDate() != null && paymentDate.isAfter(s.getDueDate())
+                            ? InstallmentStatus.OVERDUE : InstallmentStatus.DUE));
+            scheduleRepo.save(s);
+            remaining = remaining.subtract(allocation).setScale(2, RoundingMode.HALF_UP);
+        }
+    }
+
+    private RepaymentResponse toDto(Repayment r) {
+        return RepaymentResponse.builder()
+                .repaymentId(r.getRepaymentId())
+                .loanAccountId(r.getLoanAccount() != null ? r.getLoanAccount().getLoanAccountId() : null)
+                .amount(r.getAmount())
+                .mode(r.getMode())
+                .referenceNo(r.getReferenceNo())
+                .paymentDate(r.getPaymentDate())
+                .createdDate(r.getCreatedDate())
+                .build();
+    }
+}
+
+==============================================================================
+package com.smelend.smelendbackend.service.servicing;
+
+import com.smelend.smelendbackend.entity.*;
+import com.smelend.smelendbackend.entity.enums.*;
+import com.smelend.smelendbackend.repository.*;
+import com.smelend.smelendbackend.service.charge.ChargeService;
+import com.smelend.smelendbackend.service.collections.DpdService;
+import com.smelend.smelendbackend.service.fee.FeeService;
+import com.smelend.smelendbackend.util.DisbursementCalculator;
+import com.smelend.smelendbackend.service.notification.NotificationService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
+import java.util.Arrays;
+import java.util.List;
+
+@Service
+public class PenalSchedulingService {
+
+    private static final Logger log = LoggerFactory.getLogger(PenalSchedulingService.class);
+
+    private final LoanAccountRepository      loanRepo;
+    private final RepaymentScheduleRepository scheduleRepo;
+    private final ChargeService               chargeService;
+    private final DpdService                  dpdService;
+    private final NotificationService         notificationService;
+    private final FeeService                  feeService;
+
+    public PenalSchedulingService(LoanAccountRepository loanRepo,
+                                   RepaymentScheduleRepository scheduleRepo,
+                                   ChargeService chargeService,
+                                   DpdService dpdService,
+                                   NotificationService notificationService,
+                                   FeeService feeService) {
+        this.loanRepo            = loanRepo;
+        this.scheduleRepo        = scheduleRepo;
+        this.chargeService       = chargeService;
+        this.dpdService          = dpdService;
+        this.notificationService = notificationService;
+        this.feeService          = feeService;
+    }
+
+    @Scheduled(cron = "0 * * * * *")
+    @Transactional
+    public void processOverdueInstallments() {
+        LocalDate today = LocalDate.now();
+        List<LoanAccount> loans = loanRepo.findByStatusIn(
+                Arrays.asList(LoanAccountStatus.ACTIVE, LoanAccountStatus.NPA));
+
+        for (LoanAccount loan : loans) {
+            try {
+                processLoan(loan, today);
+            } catch (Exception e) {
+                log.error("[PENAL-SCHEDULER] Error processing loan #{}: {}", loan.getLoanAccountId(), e.getMessage());
+            }
+        }
+    }
+
+    @Transactional
+    public void processLoan(LoanAccount loan, LocalDate asOfDate) {
+        List<RepaymentSchedule> overdue = scheduleRepo.findOverdueByLoan(
+                loan.getLoanAccountId(), asOfDate, InstallmentStatus.PAID);
+
+        if (overdue.isEmpty()) return;
+
+        BigDecimal finePerDay = getFinePerDay(loan);
+
+        int maxDpd = 0;
+        BigDecimal totalNewPenalDelta = BigDecimal.ZERO;
+
+        for (RepaymentSchedule s : overdue) {
+            long daysBetween = ChronoUnit.DAYS.between(s.getDueDate(), asOfDate);
+            int dpd = (daysBetween <= 0) ? 1 : (int) daysBetween;
+            maxDpd = Math.max(maxDpd, dpd);
+
+            BigDecimal calculatedTotalPenal = finePerDay.multiply(BigDecimal.valueOf(dpd)).setScale(2, RoundingMode.HALF_UP);
+            BigDecimal currentPenalInSchedule = s.getPenalAmount() != null ? s.getPenalAmount() : BigDecimal.ZERO;
+            
+            BigDecimal delta = calculatedTotalPenal.subtract(currentPenalInSchedule).max(BigDecimal.ZERO);
+
+            if (delta.compareTo(BigDecimal.ZERO) > 0) {
+                // UPDATE THE OVERDUE INSTALLMENT BALANCE DIRECTLY
+                s.setPenalAmount(calculatedTotalPenal);
+                
+                // CRITICAL: Update the total and balance due of THIS installment
+                s.setTotalDue(s.getTotalDue().add(delta).setScale(2, RoundingMode.HALF_UP));
+                s.setBalanceDue(s.getBalanceDue().add(delta).setScale(2, RoundingMode.HALF_UP));
+                
+                s.setStatus(InstallmentStatus.OVERDUE);
+                scheduleRepo.save(s);
+                totalNewPenalDelta = totalNewPenalDelta.add(delta);
+            }
+        }
+
+        if (totalNewPenalDelta.compareTo(BigDecimal.ZERO) > 0) {
+            chargeService.postPenalCharge(loan, maxDpd, finePerDay);
+            
+            // This is kept to ensure the "Next" upcoming payment also shows the updated penalty if required
+            recalculateNextEMI(loan, totalNewPenalDelta);
+            
+            dpdService.computeAndUpsert(loan.getLoanAccountId());
+            notifyUser(loan, maxDpd, totalNewPenalDelta);
+        }
+    }
+
+    private BigDecimal getFinePerDay(LoanAccount loan) {
+        BigDecimal fine = BigDecimal.ZERO;
+        LoanProduct product = (loan.getApplication() != null) ? loan.getApplication().getProduct() : null;
+        if (product != null) {
+            var fees = feeService.calculateFees(product.getProductId(), loan.getPrincipalSanctioned());
+            fine = DisbursementCalculator.penalFeePerDay(fees);
+        }
+        // Demo Fallback
+        return (fine.compareTo(BigDecimal.ZERO) <= 0) ? new BigDecimal("50.00") : fine;
+    }
+
+    @Transactional
+    public void recalculateNextEMI(LoanAccount loan, BigDecimal penalToAdd) {
+        List<RepaymentSchedule> schedules = scheduleRepo.findByLoanAccount_LoanAccountIdOrderByInstallmentNoAsc(loan.getLoanAccountId());
+
+        // Find the installment that is DUE (Future)
+        RepaymentSchedule target = schedules.stream()
+                .filter(s -> s.getStatus() == InstallmentStatus.DUE 
+                          && (s.getDueDate() == null || !s.getDueDate().isBefore(LocalDate.now())))
+                .findFirst()
+                .orElse(null);
+
+        // If a future installment exists, we ensure its balance reflects the penalty too 
+        // (depending on how your UI sums up the totals)
+        if (target != null) {
+            target.setTotalDue(target.getTotalDue().add(penalToAdd).setScale(2, RoundingMode.HALF_UP));
+            target.setBalanceDue(target.getBalanceDue().add(penalToAdd).setScale(2, RoundingMode.HALF_UP));
+            scheduleRepo.save(target);
+        }
+    }
+
+    private void notifyUser(LoanAccount loan, int dpd, BigDecimal amount) {
+        if (loan.getApplication() != null && loan.getApplication().getCreatedBy() != null) {
+            notificationService.notifyDelinquencyAlert(
+                    loan.getApplication().getCreatedBy().getEmail(),
+                    loan.getApplication().getCreatedBy().getFullName(),
+                    dpd,
+                    amount.toPlainString()
+            );
+        }
+    }
+}
+==============================================================================================
+export type RoleName     = 'ADMIN'|'APPLICANT'|'AGENT'|'UNDERWRITER'|'OPERATIONS'|'SERVICING'|'COLLECTIONS'|'RISK'|'COMPLIANCE';
+export type AppStatus    = 'DRAFT'|'KYC_PENDING'|'READY_TO_SUBMIT'|'SUBMITTED'|'ROUTED_TO_UW'|'UW_APPROVED'|'UW_REJECTED'|'OFFERED'|'OFFER_ACCEPTED'|'OFFER_REJECTED'|'DISBURSED';
+export type KycStatus    = 'PENDING'|'VERIFIED'|'REJECTED';
+
+export interface InitKycRequest
+{ loanApplicationId: number; notes?: string;
+    }
+
+export interface KycPromoterDto {
+  promoterId:   number;
+  promoterName: string;
+  ownershipPct: number;
+  main:         boolean;
+  kycStatus:    string;
+  mobile?:      string;
+}
+
+export interface KycResponse {
+  kycId:              number;
+  loanApplicationId?: number;
+  smeId:              number;
+  smeLegalName?:      string;
+  applicantId?:       number;
+  applicantEmail?:    string;
+  applicantFullName?: string;
+  promoters?:         KycPromoterDto[];
+  mainPromoterId?:    number;
+  createdByUserId?:   number;
+  createdByEmail?:    string;
+  verificationStatus: KycStatus;
+  notes?:             string;
+  createdAt?:         string;
+  verifiedAt?:        string;
+  verifiedByUserId?:  number;
+  verifiedByEmail?:   string;
+  canEdit?:           boolean;
+}
+
+export type OfferStatus  = 'OFFERED'|'ACCEPTED'|'REJECTED'|'EXPIRED';
+export type UwDecision   = 'APPROVE'|'REJECT'|'RETURN';
+export type DisburseMode = 'NEFT'|'IMPS'|'UPI';
+export type RepayMode    = 'CASH'|'UPI'|'IMPS'|'NEFT'|'RTGS'|'OTHER';
+export type BizType      = 'PROPRIETORSHIP'|'PARTNERSHIP'|'PVT_LTD'|'LLP'|'OTHER';
+export type StatusFlag   = 'ACTIVE'|'INACTIVE';
+export type PtpStatus    = 'OPEN'|'KEPT'|'BROKEN'|'CANCELLED';
+export type InstStatus   = 'DUE'|'PAID'|'OVERDUE'|'PARTIAL';
+
+export type KycDocType = 'PAN'|'AADHAAR'|'BUSINESS_REG_CERT'|'GST_CERTIFICATE'|'PROMOTER_PHOTO'|'SHOP_LICENSE';
+
+export type FinDocType = 'BANK_STATEMENT'|'ITR'|'BALANCE_SHEET'|'PROFIT_LOSS'|'GST_RETURNS'|'AUDIT_REPORT';
+
+export type DocType = KycDocType | FinDocType | 'GST' | 'OTHER';
+
+export interface ApiResponse<T> { success: boolean; message: string; data: T; }
+
+export interface AuthState { token: string|null; userId: number|null; email: string|null; role: RoleName|null; }
+export interface LoginRequest    { email: string; password: string; }
+export interface LoginResponse   { userId: number; email: string; role: RoleName; token: string; }
+export interface RegisterRequest { fullName: string; email: string; password: string; phone?: string; role: 'APPLICANT'; bankAccountNo: string; ifsc: string; }
+export interface RegisterResponse{ userId: number; email: string; role: RoleName; token: string; }
+
+export interface CreateSmeRequest { legalName: string; tradeName?: string; registrationNo?: string; businessType: BizType; industry: string; address: string; gstNo?: string; }
+export interface UpdateSmeRequest { legalName: string; tradeName?: string; registrationNo?: string; businessType: BizType; industry: string; address: string; gstNo?: string; }
+export interface SmeResponse      { smeId: number; legalName: string; tradeName?: string; registrationNo?: string; businessType: BizType; industry: string; address: string; gstNo?: string; status: StatusFlag; createdByUserId?: number; createdByEmail?: string; }
+
+export interface AddPromoterRequest {
+  promoterName:    string;
+  mobile:          string;
+  email?:          string;
+  ownershipPct:    number;
+  monthlyIncome:   number;
+  panNumber?:      string;
+  aadhaarNumber?:  string;
+  din?:            string;
+  dateOfBirth?:    string;
+}
+export interface PromoterResponse   {
+    promoterId: number; smeId: number; promoterName: string; mobile: string; ownershipPct: number; monthlyIncome?: number; kycStatus: KycStatus; createdByUserId?: number; createdByEmail?: string;
+    }
+
+export interface KycActionRequest {
+    notes?: string;
+    }
+
+
+export interface CreateAppRequest {
+    smeId: number; productId: number; requestedAmount: number; tenorMonths: number; purposeNote?: string;
+    }
+export interface AppResponse      {
+    applicationId: number; smeId: number; smeLegalName?: string; productId: number; productName?: string; requestedAmount: number; tenorMonths: number; purposeNote?: string; status: AppStatus; createdByUserId?: number; createdByEmail?: string; createdDate?: string; submittedAt?: string;
+    }
+
+export interface AddDocRequest {
+    docType: DocType;
+    fileUri: string;
+    }
+export interface DocResponse   {
+  documentId: number;
+  applicationId: number;
+  docType: DocType;
+  fileUri?: string;
+  fileName?: string;
+  contentType?: string;
+  downloadUrl?: string;
+  uploadedDate?: string;
+  lastReplacedDate?: string;
+  replaced?: boolean;
+}
+
+export interface LoanProductRequest  {
+    productName: string; minAmount: number;
+    maxAmount: number; minTenorMonths: number;
+    maxTenorMonths: number; baseInterestRate: number;
+     creditThreshold?: number;
+     minIncomeAmount?: number;
+     maxIncomeAmount?: number;
+     }
+export interface LoanProductResponse {
+    productId: number; productName: string; minAmount: number; maxAmount: number; minTenorMonths: number; maxTenorMonths: number; baseInterestRate: number; status: StatusFlag; creditThreshold?: number; minIncomeAmount?: number; maxIncomeAmount?: number; }
+
+export interface UwDecisionRequest {
+    decision: UwDecision; summaryNote?: string; }
+export interface UwReviewResponse  {
+    reviewId: number; applicationId: number; decision: UwDecision; summaryNote?: string; underwriterEmail?: string; newApplicationStatus: AppStatus; }
+
+export interface CreateOfferRequest { sanctionedAmount: number; interestRate: number; emiAmount: number; validUntil: string; }
+export interface OfferResponse      { offerId: number; applicationId: number; sanctionedAmount: number; interestRate: number; emiAmount: number; validUntil?: string; offerStatus: OfferStatus; createdByEmail?: string; createdByUserId?: number; createdDate?: string; }
+
+export interface DisburseRequest     { mode: DisburseMode; transactionRef?: string; disbursementDate: string; }
+export interface DisburseResponse    { disbursementId: number; applicationId: number; amount: number; mode: DisburseMode; transactionRef?: string; disbursementDate: string; status: string; loanAccount: LoanAccountResponse; }
+export interface LoanAccountResponse { loanAccountId: number; applicationId?: number; accountNumber: string; principalSanctioned: number; interestRate: number; tenorMonths: number; startDate?: string; status: string; }
+
+export interface ScheduleResponse { scheduleId: number; loanAccountId: number; installmentNo: number; dueDate: string; principalDue: number; interestDue: number; totalDue: number; amountPaid: number; balanceDue: number; status: InstStatus; penalAmount?: number; }
+
+export interface PromoterDocResponse {
+  docId: number;
+  promoterId: number;
+  docType: DocType;
+  fileName?: string;
+  contentType?: string;
+  downloadUrl?: string;
+  uploadStatus: string;
+  uploadedDate: string;
+  lastReplacedDate?: string;
+  replaced?: boolean;
+}
+
+export interface PostRepayRequest    {
+    loanAccountId: number;
+     scheduleId?: number; amount?: number;
+     mode: string; referenceNo?: string; paymentDate?: string; }
+export interface RepayResponse    {
+    repaymentId: number;
+    loanAccountId: number;
+    amount: number; mode: RepayMode;
+    referenceNo?: string;
+    paymentDate: string; }
+
+export interface OfferAcceptRequest {
+    offerId: number;
+    digitalSignature: string;
+    termsAccepted: boolean; }
+
+export interface CreatePtpRequest    {
+    loanAccountId: number;
+    promiseDate: string; promisedAmount: number;
+    notes?: string; }
+export interface PtpResponse {
+    ptpId: number;
+    loanAccountId: number;
+    promiseDate: string;
+    promisedAmount: number;
+    status: PtpStatus;
+    notes?: string;
+    createdByUserId?: number;
+    createdByEmail?: string;
+    createdDate?: string;
+    }
+export interface DelinqResponse
+ { delinquencyId: number;
+     loanAccountId: number;
+     dpd: number; bucket: string;
+     asOfDate?: string; }
+
+export interface PortfolioMetrics {
+    totalLoanAccounts: number;
+    activeLoanAccounts: number;
+    delinquentLoanAccounts: number;
+    bucketCounts: Record<string, number>; }
+
+export interface AuditLogResponse {
+    auditId: number;
+    action: string;
+    refType: string;
+    refId: number;
+  entityType?: string;
+  entityId?: number;
+  actorUserId: number;
+   actorEmail?: string;
+   message?: string; createdDate?: string;
+   }
+
+export interface CreateUserRequest {
+    fullName: string; email: string;
+    password: string; phone?: string;
+    role: RoleName;
+    bankAccountNo?: string; ifsc?: string; }
+export interface UserResponse      {
+    userId: number;
+    fullName: string; email: string;
+    phone?: string; role: RoleName;
+    status: StatusFlag;
+    }
+export interface RoleResponse      {
+    roleId: number;
+    roleName: RoleName;
+    status?: StatusFlag;
+    }
+
+export interface EligibilityPolicyRequest {
+  productId:                  number;
+  ruleName:                   string;
+  ruleExpression?:            string;
+  maxAmountCap?:              number;
+  minCreditScore?:            number;
+  minBusinessVintageMonths?:  number;
+  maxExistingLoans?:          number;
+  minDscr?:                   number;
+}
+export interface EligibilityPolicyResponse {
+  policyId:                   number;
+  productId:                  number;
+  productName?:               string;
+  ruleName:                   string;
+  ruleExpression?:            string;
+  maxAmountCap?:              number;
+  minCreditScore?:            number;
+  minBusinessVintageMonths?:  number;
+  maxExistingLoans?:          number;
+  minDscr?:                   number;
+  status:                     StatusFlag;
+  createdAt?:                 string;
+}
+export interface EligibilityCheckResult {
+  eligible:     boolean;
+  passedRules:  string[];
+  failedRules:  string[];
+  summary:      string;
+}
+
+export type FeeType = 'PROCESSING'|'INSURANCE'|'TECH'|'LEGAL'|'OTHER';
+export type FeeMode = 'FLAT'|'PERCENT';
+
+export interface FeeConfigRequest {
+  productId:      number;
+  feeType:        FeeType;
+  feeMode:        FeeMode;
+  value:          number;
+  effectiveFrom?: string;
+  effectiveTo?:   string;
+}
+export interface FeeConfigResponse {
+  feeId:          number;
+  productId:      number;
+  productName?:   string;
+  feeType:        FeeType;
+  feeMode:        FeeMode;
+  value:          number;
+  effectiveFrom?: string;
+  effectiveTo?:   string;
+  status:         StatusFlag;
+}
+export interface AppliedFeeDto {
+  feeType:           string;
+  feeMode:           string;
+  configuredValue:   number;
+  calculatedAmount:  number;
+}
+
+export type ScoreBand    = 'LOW'|'MEDIUM'|'HIGH'|'EXCELLENT'|'POOR'|'FAIR';
+export type DecisionPath = 'AUTO_APPROVE'|'AUTO_DECLINE'|'ROUTE_TO_UW';
+
+export interface ScorecardResponse {
+  scoreId:            number;
+  applicationId:      number;
+  modelVersion?:      string;
+  inputsJson?:        string;
+  scoreValue:         number;
+  scoreBand:          ScoreBand;
+  scoredAt?:          string;
+  thresholdScore?:    number;
+  isApproveDisabled?: boolean;
+}
+export interface DecisionResponse {
+  decisionId:     number;
+  applicationId:  number;
+  path:           DecisionPath;
+  reason:         string;
+  triggeredRules? :string;
+  decidedAt?:     string;
+}
+
+export type ChargeType   = 'PROCESSING'|'PENAL'|'PREPAYMENT'|'INSURANCE'|'TECH'|'OTHER';
+export type ChargeStatus = 'OUTSTANDING'|'WAIVED'|'PAID';
+
+export interface ChargeRequest {
+  loanAccountId: number;
+  chargeType:    ChargeType;
+  amount:        number;
+  description?:  string;
+  chargeDate?:   string;
+}
+export interface ChargeResponse {
+  chargeId:      number;
+  loanAccountId: number;
+  chargeType:    ChargeType;
+  amount:        number;
+  description?:  string;
+  chargeDate?:   string;
+  status:        ChargeStatus;
+  createdAt?:    string;
+}
+
+export interface PendingDisbursementDto {
+  applicationId:     number;
+  smeLegalName:      string;
+  smeId:             string;
+  productName:       string;
+  applicantEmail:    string;
+  applicationStatus: string;
+  submittedAt?:      string;
+  offerId:           number;
+  sanctionedAmount:  number;
+  interestRate:      number;
+  emiAmount:         number;
+  offerValidUntil?:  string;
+  offerStatus:       string;
+  offerCreatedAt?:   string;
+}
+===================================================
+api service.ts
+import { Injectable } from '@angular/core';
+import { HttpClient, HttpParams } from '@angular/common/http';
+import { Observable } from 'rxjs';
+import { environment } from '../../../environments/environment';
+import {
+  ApiResponse,
+  SmeResponse, CreateSmeRequest, UpdateSmeRequest,
+  PromoterResponse, AddPromoterRequest,
+  KycResponse, KycActionRequest,
+  AppResponse, CreateAppRequest,
+  DocResponse, PromoterDocResponse, AddDocRequest, DocType,
+  LoanProductResponse, LoanProductRequest, StatusFlag,
+  UwReviewResponse, UwDecisionRequest,
+  CreateOfferRequest, OfferResponse,
+  DisburseRequest, DisburseResponse, LoanAccountResponse, PendingDisbursementDto,
+  ScheduleResponse, RepayResponse, PostRepayRequest,
+  DelinqResponse, PtpResponse, CreatePtpRequest, PtpStatus,
+  PortfolioMetrics, AuditLogResponse,
+  UserResponse, CreateUserRequest, RoleResponse,
+  EligibilityPolicyRequest, EligibilityPolicyResponse, EligibilityCheckResult,
+  FeeConfigRequest, FeeConfigResponse,
+  ScorecardResponse, DecisionResponse,
+  ChargeRequest, ChargeResponse,
+  InitKycRequest,
+} from '../models';
+
+@Injectable({ providedIn: 'root' })
+export class ApiService {
+  private readonly B = environment.apiUrl;
+  constructor(private http: HttpClient) {}
+
+  createSme(b: CreateSmeRequest): Observable<ApiResponse<SmeResponse>> {
+    return this.http.post<ApiResponse<SmeResponse>>(`${this.B}/onboarding/smes`, b);
+  }
+  updateSme(id: number, b: UpdateSmeRequest): Observable<ApiResponse<SmeResponse>> {
+    return this.http.put<ApiResponse<SmeResponse>>(`${this.B}/onboarding/smes/${id}`, b);
+  }
+  listSmes(): Observable<ApiResponse<SmeResponse[]>> {
+    return this.http.get<ApiResponse<SmeResponse[]>>(`${this.B}/onboarding/smes`);
+  }
+  getSme(id: number): Observable<ApiResponse<SmeResponse>> {
+    return this.http.get<ApiResponse<SmeResponse>>(`${this.B}/onboarding/smes/${id}`);
+  }
+
+  // ══ PROMOTERS ═════════════════════════════════════════════════════
+  addPromoter(smeId: number, b: AddPromoterRequest): Observable<ApiResponse<PromoterResponse>> {
+    return this.http.post<ApiResponse<PromoterResponse>>(`${this.B}/onboarding/smes/${smeId}/promoters`, b);
+  }
+  listPromoters(smeId: number): Observable<ApiResponse<PromoterResponse[]>> {
+    return this.http.get<ApiResponse<PromoterResponse[]>>(`${this.B}/onboarding/smes/${smeId}/promoters`);
+  }
+  getPromoter(id: number): Observable<ApiResponse<PromoterResponse>> {
+    return this.http.get<ApiResponse<PromoterResponse>>(`${this.B}/onboarding/promoters/${id}`);
+  }
+
+  // ══ KYC ═══════════════════════════════════════════════════════════
+
+
+  initializeKyc(loanApplicationId: number, notes?: string): Observable<ApiResponse<KycResponse>> {
+    return this.http.post<ApiResponse<KycResponse>>(`${this.B}/kyc/initialize`, { loanApplicationId, notes });
+  }
+
+
+  checkKycReadiness(appId: number): Observable<ApiResponse<{ready: boolean; failures: string[]; summary: string}>> {
+    return this.http.get<ApiResponse<{ready: boolean; failures: string[]; summary: string}>>(`${this.B}/kyc/applications/${appId}/readiness`);
+  }
+
+
+  getKycByApplication(appId: number): Observable<ApiResponse<KycResponse>> {
+    return this.http.get<ApiResponse<KycResponse>>(`${this.B}/kyc/application/${appId}`);
+  }
+
+  getKycById(kycId: number): Observable<ApiResponse<KycResponse>> {
+    return this.http.get<ApiResponse<KycResponse>>(`${this.B}/kyc/${kycId}`);
+  }
+
+
+  listPendingKyc(): Observable<ApiResponse<KycResponse[]>> {
+    return this.http.get<ApiResponse<KycResponse[]>>(`${this.B}/kyc/pending`);
+  }
+  listKycBySme(smeId: number): Observable<ApiResponse<KycResponse[]>> {
+    return this.http.get<ApiResponse<KycResponse[]>>(`${this.B}/kyc/smes/${smeId}`);
+  }
+  verifyKyc(kycId: number, b?: KycActionRequest): Observable<ApiResponse<KycResponse>> {
+    return this.http.patch<ApiResponse<KycResponse>>(`${this.B}/kyc/${kycId}/verify`, b ?? {});
+  }
+  rejectKyc(kycId: number, b?: KycActionRequest): Observable<ApiResponse<KycResponse>> {
+    return this.http.patch<ApiResponse<KycResponse>>(`${this.B}/kyc/${kycId}/reject`, b ?? {});
+  }
+
+  // ══ APPLICATIONS ══════════════════════════════════════════════════
+  createApp(b: CreateAppRequest): Observable<ApiResponse<AppResponse>> {
+    return this.http.post<ApiResponse<AppResponse>>(`${this.B}/applications`, b);
+  }
+  listApps(): Observable<ApiResponse<AppResponse[]>> {
+    return this.http.get<ApiResponse<AppResponse[]>>(`${this.B}/applications`);
+  }
+
+  listAllApps(): Observable<ApiResponse<AppResponse[]>> {
+    return this.http.get<ApiResponse<AppResponse[]>>(`${this.B}/applications/all`);
+  }
+  getApp(id: number): Observable<ApiResponse<AppResponse>> {
+    return this.http.get<ApiResponse<AppResponse>>(`${this.B}/applications/${id}`);
+  }
+  submitApp(id: number): Observable<ApiResponse<AppResponse>> {
+    return this.http.patch<ApiResponse<AppResponse>>(`${this.B}/applications/${id}/submit`, {});
+  }
+
+  // ══ DOCUMENTS ═════════════════════════════════════════════════════
+  addDoc(appId: number, b: AddDocRequest): Observable<ApiResponse<DocResponse>> {
+    return this.http.post<ApiResponse<DocResponse>>(`${this.B}/applications/${appId}/documents`, b);
+  }
+  listDocs(appId: number): Observable<ApiResponse<DocResponse[]>> {
+    return this.http.get<ApiResponse<DocResponse[]>>(`${this.B}/applications/${appId}/documents`);
+  }
+  uploadDoc(appId: number, file: File, docType: DocType): Observable<ApiResponse<DocResponse>> {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('docType', docType);
+    return this.http.post<ApiResponse<DocResponse>>(
+      `${this.B}/applications/${appId}/documents/upload`, fd);
+  }
+  uploadPromoterDoc(promoterId: number, file: File, docType: string): Observable<ApiResponse<PromoterDocResponse>> {
+    const fd = new FormData();
+    fd.append('file', file);
+    return this.http.post<ApiResponse<PromoterDocResponse>>(
+      `${this.B}/onboarding/promoters/${promoterId}/documents/${docType}/upload`, fd);
+  }
+
+  listPromoterDocs(promoterId: number): Observable<ApiResponse<PromoterDocResponse[]>> {
+    return this.http.get<ApiResponse<PromoterDocResponse[]>>(
+      `${this.B}/onboarding/promoters/${promoterId}/documents`);
+  }
+
+  downloadPromoterDoc(promoterId: number, docType: string): Observable<Blob> {
+    return this.http.get(
+      `${this.B}/onboarding/promoters/${promoterId}/documents/${docType}/download`,
+      { responseType: 'blob' });
+  }
+
+  downloadDoc(appId: number, docId: number): Observable<Blob> {
+    return this.http.get(
+      `${this.B}/applications/${appId}/documents/${docId}/download`,
+      { responseType: 'blob' }
+    );
+  }
+
+  // ══ ADMIN — USER MANAGEMENT ═══════════════════════════════════════
+  listRoles(): Observable<ApiResponse<RoleResponse[]>> {
+    return this.http.get<ApiResponse<RoleResponse[]>>(`${this.B}/admin/roles`);
+  }
+  createUser(b: CreateUserRequest): Observable<ApiResponse<UserResponse>> {
+    return this.http.post<ApiResponse<UserResponse>>(`${this.B}/admin/users`, b);
+  }
+  listUsers(): Observable<ApiResponse<UserResponse[]>> {
+    return this.http.get<ApiResponse<UserResponse[]>>(`${this.B}/admin/users`);
+  }
+  setUserStatus(uid: number, status: StatusFlag): Observable<ApiResponse<UserResponse>> {
+    return this.http.patch<ApiResponse<UserResponse>>(
+      `${this.B}/admin/users/${uid}/status`, {},
+      { params: new HttpParams().set('status', status) }
+    );
+  }
+
+  // ══ ADMIN — LOAN PRODUCTS ═════════════════════════════════════════
+  createProduct(b: LoanProductRequest): Observable<ApiResponse<LoanProductResponse>> {
+    return this.http.post<ApiResponse<LoanProductResponse>>(`${this.B}/admin/loan-products`, b);
+  }
+  listProducts(): Observable<ApiResponse<LoanProductResponse[]>> {
+    return this.http.get<ApiResponse<LoanProductResponse[]>>(`${this.B}/admin/loan-products`);
+  }
+  /** Public endpoint — available to all authenticated roles */
+  listActiveProducts(): Observable<ApiResponse<LoanProductResponse[]>> {
+    return this.http.get<ApiResponse<LoanProductResponse[]>>(`${this.B}/loan-products`);
+  }
+  updateProduct(id: number, b: LoanProductRequest): Observable<ApiResponse<LoanProductResponse>> {
+    return this.http.put<ApiResponse<LoanProductResponse>>(`${this.B}/admin/loan-products/${id}`, b);
+  }
+  setProductStatus(id: number, status: StatusFlag): Observable<ApiResponse<LoanProductResponse>> {
+    return this.http.patch<ApiResponse<LoanProductResponse>>(
+      `${this.B}/admin/loan-products/${id}/status`, {},
+      { params: new HttpParams().set('status', status) }
+    );
+  }
+  deleteProduct(id: number): Observable<ApiResponse<void>> {
+    return this.http.delete<ApiResponse<void>>(`${this.B}/admin/loan-products/${id}`);
+  }
+
+  // ══ ADMIN MONITOR (GET-only cross-role views) ═════════════════════
+  monitorAllKyc(): Observable<ApiResponse<KycResponse[]>> {
+    return this.http.get<ApiResponse<KycResponse[]>>(`${this.B}/admin/monitor/kyc`);
+  }
+  monitorAllApps(): Observable<ApiResponse<AppResponse[]>> {
+    return this.http.get<ApiResponse<AppResponse[]>>(`${this.B}/admin/monitor/applications`);
+  }
+  monitorRiskMetrics(): Observable<ApiResponse<PortfolioMetrics>> {
+    return this.http.get<ApiResponse<PortfolioMetrics>>(`${this.B}/admin/monitor/risk/metrics`);
+  }
+  monitorAuditLogs(): Observable<ApiResponse<AuditLogResponse[]>> {
+    return this.http.get<ApiResponse<AuditLogResponse[]>>(`${this.B}/admin/monitor/audit-logs`);
+  }
+  monitorDelinquencies(): Observable<ApiResponse<DelinqResponse[]>> {
+    return this.http.get<ApiResponse<DelinqResponse[]>>(`${this.B}/admin/monitor/delinquencies`);
+  }
+
+  // ══ UNDERWRITING ══════════════════════════════════════════════════
+  getUwQueue(): Observable<ApiResponse<AppResponse[]>> {
+    return this.http.get<ApiResponse<AppResponse[]>>(`${this.B}/uw/queue`);
+  }
+  submitUwDecision(appId: number, b: UwDecisionRequest): Observable<ApiResponse<UwReviewResponse>> {
+    return this.http.post<ApiResponse<UwReviewResponse>>(`${this.B}/uw/applications/${appId}/decision`, b);
+  }
+
+  // ══ OPERATIONS ════════════════════════════════════════════════════
+  listApprovedApps(): Observable<ApiResponse<AppResponse[]>> {
+    return this.http.get<ApiResponse<AppResponse[]>>(`${this.B}/ops/applications/approved`);
+  }
+  createOffer(appId: number, b: CreateOfferRequest): Observable<ApiResponse<OfferResponse>> {
+    return this.http.post<ApiResponse<OfferResponse>>(`${this.B}/offers/applications/${appId}`, b);
+  }
+  getOffer(offerId: number): Observable<ApiResponse<OfferResponse>> {
+    return this.http.get<ApiResponse<OfferResponse>>(`${this.B}/offers/${offerId}`);
+  }
+  acceptOffer(offerId: number): Observable<ApiResponse<OfferResponse>> {
+    return this.http.patch<ApiResponse<OfferResponse>>(`${this.B}/offers/${offerId}/accept`, {});
+  }
+  rejectOffer(offerId: number): Observable<ApiResponse<OfferResponse>> {
+    return this.http.patch<ApiResponse<OfferResponse>>(`${this.B}/offers/${offerId}/reject`, {});
+  }
+  listOffers(): Observable<ApiResponse<OfferResponse[]>> {
+    return this.http.get<ApiResponse<OfferResponse[]>>(`${this.B}/offers`);
+  }
+  listPendingDisbursements(): Observable<ApiResponse<PendingDisbursementDto[]>> {
+    return this.http.get<ApiResponse<PendingDisbursementDto[]>>(`${this.B}/ops/pending-disbursements`);
+  }
+
+  disburse(appId: number, b: DisburseRequest): Observable<ApiResponse<DisburseResponse>> {
+    return this.http.post<ApiResponse<DisburseResponse>>(`${this.B}/ops/applications/${appId}/disburse`, b);
+  }
+  getLoanAccount(id: number): Observable<ApiResponse<LoanAccountResponse>> {
+    return this.http.get<ApiResponse<LoanAccountResponse>>(`${this.B}/ops/loan-accounts/${id}`);
+  }
+
+  /** GET /loan-accounts/by-application/{appId} */
+  getLoanAccountByApplication(appId: number): Observable<ApiResponse<LoanAccountResponse>> {
+    return this.http.get<ApiResponse<LoanAccountResponse>>(`${this.B}/servicing/loan-accounts/by-application/${appId}`);
+  }
+
+  // ══ SERVICING ═════════════════════════════════════════════════════
+  getSchedule(loanAccountId: number): Observable<ApiResponse<ScheduleResponse[]>> {
+    return this.http.get<ApiResponse<ScheduleResponse[]>>(
+      `${this.B}/servicing/loan-accounts/${loanAccountId}/schedule`);
+  }
+  postRepayment(b: PostRepayRequest): Observable<ApiResponse<RepayResponse>> {
+    return this.http.post<ApiResponse<RepayResponse>>(`${this.B}/servicing/repayments`, b);
+  }
+  listRepayments(loanAccountId: number): Observable<ApiResponse<RepayResponse[]>> {
+    return this.http.get<ApiResponse<RepayResponse[]>>(
+      `${this.B}/servicing/repayments/loan-accounts/${loanAccountId}`);
+  }
+
+  // ══ COLLECTIONS ═══════════════════════════════════════════════════
+  listAllDelinquencies(): Observable<ApiResponse<DelinqResponse[]>> {
+    return this.http.get<ApiResponse<DelinqResponse[]>>(`${this.B}/collections/delinquencies`);
+  }
+  createPtp(b: CreatePtpRequest): Observable<ApiResponse<PtpResponse>> {
+    return this.http.post<ApiResponse<PtpResponse>>(`${this.B}/collections/ptp`, b);
+  }
+  listPtps(loanAccountId: number): Observable<ApiResponse<PtpResponse[]>> {
+    return this.http.get<ApiResponse<PtpResponse[]>>(
+      `${this.B}/collections/loan-accounts/${loanAccountId}/ptp`);
+  }
+  updatePtpStatus(ptpId: number, status: PtpStatus): Observable<ApiResponse<PtpResponse>> {
+    return this.http.patch<ApiResponse<PtpResponse>>(
+      `${this.B}/collections/ptp/${ptpId}/status`, {},
+      { params: new HttpParams().set('status', status) }
+    );
+  }
+
+  // ══ RISK ══════════════════════════════════════════════════════════
+  getPortfolioMetrics(): Observable<ApiResponse<PortfolioMetrics>> {
+    return this.http.get<ApiResponse<PortfolioMetrics>>(`${this.B}/risk/portfolio/metrics`);
+  }
+
+  // ══ COMPLIANCE ════════════════════════════════════════════════════
+  listAuditLogs(): Observable<ApiResponse<AuditLogResponse[]>> {
+    return this.http.get<ApiResponse<AuditLogResponse[]>>(`${this.B}/compliance/audit-logs`);
+  }
+
+  // ── Eligibility Policies (Admin) ──────────────────────────────────
+  listEligibilityPolicies(): Observable<ApiResponse<EligibilityPolicyResponse[]>> {
+    return this.http.get<ApiResponse<EligibilityPolicyResponse[]>>(`${this.B}/admin/eligibility-policies`);
+  }
+  listPoliciesByProduct(productId: number): Observable<ApiResponse<EligibilityPolicyResponse[]>> {
+    return this.http.get<ApiResponse<EligibilityPolicyResponse[]>>(`${this.B}/admin/eligibility-policies/product/${productId}`);
+  }
+  createEligibilityPolicy(b: EligibilityPolicyRequest): Observable<ApiResponse<EligibilityPolicyResponse>> {
+    return this.http.post<ApiResponse<EligibilityPolicyResponse>>(`${this.B}/admin/eligibility-policies`, b);
+  }
+  deactivatePolicy(id: number): Observable<ApiResponse<void>> {
+    return this.http.delete<ApiResponse<void>>(`${this.B}/admin/eligibility-policies/${id}`);
+  }
+  checkEligibility(applicationId: number): Observable<ApiResponse<EligibilityCheckResult>> {
+    return this.http.get<ApiResponse<EligibilityCheckResult>>(`${this.B}/admin/eligibility-check/${applicationId}`);
+  }
+
+  // ── Fee Configs (Admin/Ops) ───────────────────────────────────────
+  listFeeConfigs(): Observable<ApiResponse<FeeConfigResponse[]>> {
+    return this.http.get<ApiResponse<FeeConfigResponse[]>>(`${this.B}/admin/fee-configs`);
+  }
+  listFeesByProduct(productId: number): Observable<ApiResponse<FeeConfigResponse[]>> {
+    return this.http.get<ApiResponse<FeeConfigResponse[]>>(`${this.B}/admin/fee-configs/product/${productId}`);
+  }
+  createFeeConfig(b: FeeConfigRequest): Observable<ApiResponse<FeeConfigResponse>> {
+    return this.http.post<ApiResponse<FeeConfigResponse>>(`${this.B}/admin/fee-configs`, b);
+  }
+  deactivateFee(id: number): Observable<ApiResponse<void>> {
+    return this.http.delete<ApiResponse<void>>(`${this.B}/admin/fee-configs/${id}`);
+  }
+
+  // ── Scorecard + Decision ──────────────────────────────────────────
+  getScorecard(applicationId: number): Observable<ApiResponse<ScorecardResponse>> {
+    return this.http.get<ApiResponse<ScorecardResponse>>(`${this.B}/uw/applications/${applicationId}/scorecard`);
+  }
+  getDecision(applicationId: number): Observable<ApiResponse<DecisionResponse>> {
+    return this.http.get<ApiResponse<DecisionResponse>>(`${this.B}/uw/applications/${applicationId}/decision-result`);
+  }
+  runScoring(applicationId: number): Observable<ApiResponse<DecisionResponse>> {
+    return this.http.post<ApiResponse<DecisionResponse>>(`${this.B}/uw/applications/${applicationId}/rescore`, {});
+  }
+
+  // ── Charges ───────────────────────────────────────────────────────
+  postCharge(b: ChargeRequest): Observable<ApiResponse<ChargeResponse>> {
+    return this.http.post<ApiResponse<ChargeResponse>>(`${this.B}/collections/charges`, b);
+  }
+  listCharges(loanAccountId: number): Observable<ApiResponse<ChargeResponse[]>> {
+    return this.http.get<ApiResponse<ChargeResponse[]>>(`${this.B}/collections/charges/loan/${loanAccountId}`);
+  }
+  waiveCharge(chargeId: number): Observable<ApiResponse<ChargeResponse>> {
+    return this.http.patch<ApiResponse<ChargeResponse>>(`${this.B}/collections/charges/${chargeId}/waive`, {});
+  }
+
+}
+====================================================================================
+servig.html
+<div class="fade-in">
+  <div class="d-flex align-items-start justify-content-between flex-wrap gap-2 mb-4">
+    <div>
+      <h4 class="rp-title h5 fw-bold mb-0"><i class="bi bi-calendar3"></i> Loan Servicing</h4>
+      <p class="text-muted small mt-1">Search by Loan Account ID to view repayment schedule and EMI details</p>
+    </div>
+  </div>
+
+  <!-- Search Panel -->
+  <div class="card mb-3">
+    <div class="card-header d-flex align-items-center justify-content-between">
+      <span class="fw-bold d-flex align-items-center gap-2" style="font-family:var(--fs-font-head);color:#0f766e;"><i class="bi bi-search"></i> Account Lookup</span>
+    </div>
+    <div style="padding:1rem 1.125rem;display:flex;gap:.75rem;align-items:flex-end;flex-wrap:wrap;">
+      <div style="flex:1;min-width:180px;">
+        <label class="form-label">Loan Account ID</label>
+        <input type="number" class="form-control font-mono" [(ngModel)]="loanAccId"
+               placeholder="Enter account ID (e.g. 1)"
+               min="1"
+               (keyup.enter)="load()">
+      </div>
+      <button class="btn btn-primary" (click)="load()" [disabled]="loading() || loanAccId < 1">
+        @if (loading()) { <span class="spinner-border spinner-border-sm"></span> Searching… }
+        @else { <i class="bi bi-search"></i> Load Schedule }
+      </button>
+      @if (hasSearched()) {
+        <button class="btn btn-outline-secondary" (click)="clear()">
+          <i class="bi bi-x-lg"></i> Clear
+        </button>
+      }
+    </div>
+  </div>
+
+  <!-- Skeleton while loading -->
+  @if (loading()) {
+    <div class="skeleton-wrap d-flex flex-column gap-2">
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;">
+        @for (i of [1,2,3,4]; track i) { <div class="skeleton-card"></div> }
+      </div>
+      <div class="skeleton-card" style="height:80px;"></div>
+      @for (i of [1,2,3,4,5]; track i) { <div class="skeleton-row"></div> }
+    </div>
+  }
+
+  <!-- Not Found — only after search -->
+  @if (!loading() && hasSearched() && notFound()) {
+    <div class="d-flex align-items-center gap-3 p-3 rounded-3 bg-light text-muted">
+      <i class="bi bi-search" style="font-size:2rem;"></i>
+      <div>
+        <p style="font-weight:600;margin:0;">No account found</p>
+        <p style="margin:.25rem 0 0;font-size:.78rem;">Loan Account ID <strong class="font-mono">#{{ loanAccId }}</strong> does not exist or you don't have access.</p>
+      </div>
+    </div>
+  }
+
+
+  <!-- Results: Account KPIs (only if metadata loaded) -->
+  @if (!loading() && loanAcc()) {
+    <!-- Account KPIs -->
+    <div class="row g-3 mb-3">
+      <div class="col-sm-6 col-lg-3">
+        <div class="stat-card">
+          <div class="stat-icon" style="background:var(--primary-lt);color:var(--primary);"><i class="bi bi-bank"></i></div>
+          <div class="stat-value font-mono" style="font-size:1.125rem;">{{ loanAcc()!.accountNumber }}</div>
+          <div class="stat-label">Account Number</div>
+        </div>
+      </div>
+      <div class="col-sm-6 col-lg-3">
+        <div class="stat-card">
+          <div class="stat-icon" style="background:#ecfdf5;color:#059669;"><i class="bi bi-currency-rupee"></i></div>
+          <div class="stat-value">₹{{ loanAcc()!.principalSanctioned | number:'1.0-0' }}</div>
+          <div class="stat-label">Principal Sanctioned</div>
+        </div>
+      </div>
+      <div class="col-sm-6 col-lg-3">
+        <div class="stat-card">
+          <div class="stat-icon" style="background:#fffbeb;color:#d97706;"><i class="bi bi-percent"></i></div>
+          <div class="stat-value">{{ loanAcc()!.interestRate }}%</div>
+          <div class="stat-label">Interest Rate p.a.</div>
+        </div>
+      </div>
+      <div class="col-sm-6 col-lg-3">
+        <div class="stat-card">
+          <div class="stat-icon" style="background:#fdf4ff;color:#7c3aed;"><i class="bi bi-calendar"></i></div>
+          <div class="stat-value">{{ loanAcc()!.tenorMonths }} mo</div>
+          <div class="stat-label">Tenor</div>
+        </div>
+      </div>
+    </div>
+  }
+
+  <!-- Schedule — rendered independently of loanAcc() metadata -->
+  @if (!loading() && schedule().length > 0) {
+      <!-- Summary Stats -->
+      <div class="row g-3 mb-3">
+        <div class="col-sm-4">
+          <div class="stat-card" style="padding:.875rem;">
+            <div class="stat-value" style="font-size:1.25rem;color:#ef4444;">{{ overdueCount() }}</div>
+            <div class="stat-label">Overdue Installments</div>
+          </div>
+        </div>
+        <div class="col-sm-4">
+          <div class="stat-card" style="padding:.875rem;">
+            <div class="stat-value" style="font-size:1.25rem;color:#f59e0b;">{{ dueCount() }}</div>
+            <div class="stat-label">Due Installments</div>
+          </div>
+        </div>
+        <div class="col-sm-4">
+          <div class="stat-card" style="padding:.875rem;">
+            <div class="stat-value" style="font-size:1.25rem;color:var(--primary);">{{ paidPct() }}%</div>
+            <div class="stat-label">Repayment Progress</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Progress Bar -->
+      <div class="fintech-card mb-3" style="padding:1.125rem;">
+        <div style="display:flex;justify-content:space-between;font-size:.8125rem;font-weight:600;margin-bottom:.625rem;">
+          <span>Repayment Progress</span>
+          <span style="color:var(--primary);">{{ paidPct() }}% complete</span>
+        </div>
+        <div class="pipeline-bar">
+          <div class="pipeline-fill" [style.width]="paidPct() + '%'" [style.background]="paidColor()"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:.625rem;font-size:.75rem;color:var(--text-muted);">
+          <span>Paid: <strong class="font-mono">₹{{ totalPaid() | number:'1.0-0' }}</strong></span>
+          <span>Balance: <strong class="font-mono" style="color:var(--danger);">₹{{ totalBal() | number:'1.0-0' }}</strong></span>
+          <span>Total: <strong class="font-mono">₹{{ totalDue() | number:'1.0-0' }}</strong></span>
+        </div>
+      </div>
+
+      <!-- EMI Table -->
+      <div class="card mb-3">
+        <div class="card-header d-flex align-items-center justify-content-between">
+          <span class="fw-bold d-flex align-items-center gap-2" style="font-family:var(--fs-font-head);color:#0f766e;"><i class="bi bi-table"></i> EMI Schedule — {{ schedule().length }} installments</span>
+          <span class="chart-badge">Account #{{ loanAccId }}</span>
+        </div>
+        <div class="table-responsive">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>#</th><th>Due Date</th><th>Principal</th><th>Interest</th>
+                <th>Total Due</th><th>Paid</th><th>Penal</th><th>Balance</th><th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <div class="mb-2">
+              <input class="form-control form-control-sm" [(ngModel)]="scheduleSearch" (input)="onScheduleSearch()"
+                     placeholder="Filter by status or installment #…" style="max-width:260px;">
+            </div>
+            @for (row of pgSchedule.paged(); track row.scheduleId) {
+                <tr class="tbl-row-hover"
+                    [style.background]="row.status === 'OVERDUE' ? 'rgba(239,68,68,.04)' :
+                                        row.status === 'PAID'    ? 'rgba(16,185,129,.03)' : ''">
+                  <td style="font-weight:700;color:var(--text-muted);">{{ row.installmentNo }}</td>
+                  <td class="font-mono" style="font-size:.8rem;">{{ row.dueDate | date:'dd MMM yyyy' }}</td>
+                  <td class="font-mono">₹{{ row.principalDue | number:'1.0-0' }}</td>
+                  <td class="font-mono">₹{{ row.interestDue | number:'1.0-0' }}</td>
+                  <td class="font-mono" style="font-weight:700;">₹{{ row.totalDue | number:'1.0-0' }}</td>
+                  <td class="font-mono" style="color:var(--success);">₹{{ row.amountPaid | number:'1.0-0' }}</td>
+                  <td class="font-mono" style="color:#ef4444;" title="Penal charges">
+                    {{ row.penalAmount && row.penalAmount > 0 ? ('₹' + (row.penalAmount | number:'1.0-0')) : '—' }}
+                  </td>
+                  <td class="font-mono" [style.color]="row.balanceDue > 0 ? 'var(--danger)' : 'var(--text-muted)'">
+                    ₹{{ row.balanceDue | number:'1.0-0' }}
+                  </td>
+                  <td><span [class]="statusClass(row.status)">{{ row.status }}</span></td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        <app-paginator [pg]="pgSchedule"></app-paginator>
+        </div>
+      </div>
+  }
+
+  <!-- Initial state — before any search -->
+  @if (!loading() && !hasSearched()) {
+    <div class="d-flex flex-column align-items-center justify-content-center text-muted py-5 gap-2">
+      <i class="bi bi-calendar3" style="font-size:3rem;opacity:.2;"></i>
+      <p>Enter a Loan Account ID above and click <strong>Load Schedule</strong> to view the EMI repayment schedule.</p>
+    </div>
+  }
+</div>
+=======================================================
+servicing.ts
+import { Component, signal, inject, computed } from '@angular/core';
+import { paginate } from '../../core/services/pagination.service';
+import { PaginatorComponent } from '../../shared/paginator/paginator.component';
+import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
+import { ApiService } from '../../core/services/api.service';
+import { AuthService } from '../../core/services/auth.service';
+import { ToastService } from '../../core/services/toast.service';
+import { ScheduleResponse, LoanAccountResponse } from '../../core/models';
+
+@Component({
+  selector: 'app-servicing',
+  standalone: true,
+  imports: [CommonModule, FormsModule, PaginatorComponent],
+  templateUrl: './servicing.component.html'
+})
+export class ServicingComponent {
+  private api   = inject(ApiService);
+  readonly auth = inject(AuthService);
+  private toast = inject(ToastService);
+
+  isReadOnly = signal(!this.auth.hasRole('SERVICING'));
+
+  loanAccId   = 0;
+  schedule    = signal<ScheduleResponse[]>([]);
+  loanAcc     = signal<LoanAccountResponse | null>(null);
+  loading     = signal(false);
+  hasSearched = signal(false);  // ← prevents "no match" on initial load
+  notFound    = signal(false);
+
+  load() {
+    const id = Number(this.loanAccId);
+    if (!id || id < 1) {
+      this.toast.warning('Enter a valid Loan Account ID');
+      return;
+    }
+    this.loading.set(true);
+    this.hasSearched.set(true);
+    this.notFound.set(false);
+    this.schedule.set([]);
+    this.loanAcc.set(null);
+
+    // getLoanAccount is supplementary metadata only.
+    // Its failure must NEVER affect notFound or loading — schedule is the primary source.
+    this.api.getLoanAccount(id).subscribe({
+      next: r => { this.loanAcc.set(r.data); },
+      error: () => { /* silently ignore — schedule result is authoritative */ }
+    });
+
+    // Schedule is the primary call — it alone controls loading + notFound
+    this.api.getSchedule(id).subscribe({
+      next: r => {
+        const data = r.data ?? [];
+        this.schedule.set(data);
+        this.loading.set(false);
+        if (data.length === 0) {
+          this.notFound.set(true);
+        } else {
+          this.notFound.set(false);
+          this.toast.success('Schedule loaded', `${data.length} installments for Account #${id}`);
+        }
+      },
+      error: e => {
+        this.loading.set(false);
+        this.notFound.set(true);
+        this.toast.error('Account not found', e?.error?.message ?? `No loan account with ID #${id}`);
+      }
+    });
+  }
+
+  clear() {
+    this.loanAccId = 0;
+    this.schedule.set([]);
+    this.loanAcc.set(null);
+    this.hasSearched.set(false);
+    this.notFound.set(false);
+  }
+
+  scheduleSearch = '';
+  filteredSchedule = computed<import('../../core/models').ScheduleResponse[]>(() => {
+    const q = this.scheduleSearch.trim().toLowerCase();
+    return q ? this.schedule().filter(r =>
+      (r.status||'').toLowerCase().includes(q) ||
+      String(r.installmentNo||'').includes(q)
+    ) : this.schedule();
+  });
+  pgSchedule = paginate(() => this.filteredSchedule());
+  onScheduleSearch() { this.pgSchedule.reset(); }
+
+  totalDue  = computed(() => this.schedule().reduce((s, r) => s + r.totalDue, 0));
+  totalPaid = computed(() => this.schedule().reduce((s, r) => s + r.amountPaid, 0));
+  totalBal  = computed(() => this.schedule().reduce((s, r) => s + r.balanceDue, 0));
+  paidPct   = computed(() => { const t = this.totalDue(); return t > 0 ? Math.round(this.totalPaid() / t * 100) : 0; });
+  paidColor = computed(() => { const p = this.paidPct(); return p >= 80 ? "#10b981" : p >= 40 ? "#f59e0b" : "#ef4444"; });
+  overdueCount() { return this.schedule().filter(r => r.status === 'OVERDUE').length; }
+  dueCount()     { return this.schedule().filter(r => r.status === 'DUE').length; }
+  statusClass(s: string) { return 'badge-status bs-' + s.toLowerCase(); }
+}
+===========================================================
+repayment.component.html
+<div class="fade-in">
+  <div class="d-flex align-items-start justify-content-between flex-wrap gap-2 mb-4">
+    <div>
+      <h4 class="fw-bold mb-0 d-flex align-items-center gap-2">
+        <i class="bi bi-cash-coin" style="color:var(--bs-primary);"></i> Repayments
+      </h4>
+      <p class="text-muted small mt-1">Post repayments and view payment history for loan accounts</p>
+    </div>
+  </div>
+
+  <div class="fs-tab-group mb-3">
+    <button class="fs-tab-btn" [class.active]="tab()===0" (click)="tab.set(0)">
+      <i class="bi bi-plus-circle me-1"></i>Post Repayment
+    </button>
+    <button class="fs-tab-btn" [class.active]="tab()===1" (click)="tab.set(1)">
+      <i class="bi bi-clock-history me-1"></i>Payment History
+    </button>
+  </div>
+
+  <!-- ══ Tab 0: Post Repayment ═══════════════════════════════════════ -->
+  @if (tab() === 0) {
+    <div class="row justify-content-center">
+      <div class="col-lg-7">
+
+        @if (!canPost()) {
+          <div class="alert d-flex gap-3 align-items-start border-0 rounded-3 mb-3"
+               style="background:#f0fdfa;border-left:4px solid #0d9488 !important;">
+            <i class="bi bi-lock-fill mt-1" style="color:#0d9488;font-size:1.1rem;"></i>
+            <div>
+              <div class="fw-bold" style="color:#0d9488;">View-only access</div>
+              <div class="small text-muted mt-1">
+                Only <strong>Servicing</strong> or <strong>Operations</strong> officers can post repayments.
+              </div>
+            </div>
+          </div>
+        }
+
+        <div class="card">
+          <div class="card-header d-flex align-items-center justify-content-between">
+            <span class="fw-bold d-flex align-items-center gap-2" style="font-family:var(--fs-font-head);color:#0f766e;">
+              <i class="bi bi-cash-coin"></i> Post New Repayment
+            </span>
+            <span class="badge text-white" style="background:#0d9488;font-size:.65rem;">
+              {{ canPost() ? 'ENABLED' : 'VIEW ONLY' }}
+            </span>
+          </div>
+          <div class="card-body">
+            <form [formGroup]="postForm" (ngSubmit)="post()">
+              <fieldset [disabled]="!canPost()">
+
+                <!-- Step 1: Loan Account + Load Schedule -->
+                <div class="row g-2 mb-3">
+                  <div class="col-8">
+                    <label class="form-label">Loan Account ID *</label>
+                    <input type="number" class="form-control font-mono" formControlName="loanAccountId"
+                           placeholder="e.g. 1"
+                           [class.is-invalid]="pf['loanAccountId'].invalid && pf['loanAccountId'].touched">
+                    <div class="invalid-feedback">Required</div>
+                  </div>
+                  <div class="col-4 d-flex align-items-end">
+                    <button type="button" class="btn btn-outline-primary w-100"
+                            (click)="loadSchedule()" [disabled]="scheduleLoading()">
+                      @if (scheduleLoading()) {
+                        <span class="spinner-border spinner-border-sm me-1"></span>
+                      } @else {
+                        <i class="bi bi-calendar3 me-1"></i>
+                      }
+                      Load EMI
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Step 2: EMI Schedule picker (appears after Load EMI) -->
+                @if (schedule().length > 0) {
+                  <div class="mb-3">
+                    <label class="form-label fw-semibold" style="color:#0f766e;">
+                      <i class="bi bi-grid-3x3-gap me-1"></i>Select Installment to Pay
+                    </label>
+                    <div class="d-flex flex-column gap-2">
+                      @for (s of schedule(); track s.scheduleId) {
+                        <button type="button"
+                                class="emi-pick-row"
+                                [class.selected]="selectedScheduleId() === s.scheduleId"
+                                (click)="selectSchedule(s)">
+                          <div class="d-flex justify-content-between align-items-center">
+                            <div>
+                              <span class="fw-bold me-2 font-mono" style="font-size:.8rem;color:#0f766e;">
+                                #{{ s.installmentNo }}
+                              </span>
+                              <span style="font-size:.78rem;color:#64748b;">
+                                Due {{ s.dueDate | date:'dd MMM yyyy' }}
+                              </span>
+                            </div>
+                            <div class="text-end">
+                              <div class="fw-bold font-mono" style="color:#1e293b;">
+                                ₹{{ (s.balanceDue ?? s.totalDue) | number:'1.0-0' }}
+                              </div>
+                              <div style="font-size:.68rem;color:#94a3b8;">balance due</div>
+                            </div>
+                          </div>
+                          @if (selectedScheduleId() === s.scheduleId) {
+                            <div style="font-size:.7rem;color:#0d9488;margin-top:.3rem;">
+                              <i class="bi bi-check2-circle me-1"></i>
+                              Amount auto-set to ₹{{ (s.balanceDue ?? s.totalDue) | number:'1.2-2' }}
+                            </div>
+                          }
+                        </button>
+                      }
+                    </div>
+                    @if (selectedScheduleId()) {
+                      <button type="button" class="btn btn-link btn-sm p-0 mt-1 text-muted"
+                              (click)="clearSchedule()">
+                        <i class="bi bi-x me-1"></i>Clear selection (enter amount manually)
+                      </button>
+                    }
+                  </div>
+                }
+
+                <!-- Step 3: Amount (auto-filled or manual) + other fields -->
+                <div class="row g-3 mb-3">
+                  <div class="col-6">
+                    <label class="form-label">
+                      Amount (₹)
+                      @if (selectedScheduleId()) {
+                        <span class="badge ms-1" style="background:#d1fae5;color:#065f46;font-size:.6rem;">Auto</span>
+                      } @else {
+                        <span class="text-danger">*</span>
+                      }
+                    </label>
+                    <input type="number" class="form-control font-mono" formControlName="amount"
+                           placeholder="Auto-filled from EMI selection" step="0.01"
+                           [readonly]="!!selectedScheduleId()"
+                           [style.background]="selectedScheduleId() ? '#f0fdf4' : ''"
+                           [class.is-invalid]="pf['amount'].invalid && pf['amount'].touched && !selectedScheduleId()">
+                    <div class="form-text">
+                      @if (selectedScheduleId()) {
+                        Fetched from installment — read-only
+                      } @else {
+                        Or select an installment above to auto-fill
+                      }
+                    </div>
+                  </div>
+                  <div class="col-6">
+                    <label class="form-label">Payment Date *</label>
+                    <input type="date" class="form-control" formControlName="paymentDate"
+                           [class.is-invalid]="pf['paymentDate'].invalid && pf['paymentDate'].touched">
+                    <div class="invalid-feedback">Required</div>
+                  </div>
+                  <div class="col-6">
+                    <label class="form-label">Payment Mode *</label>
+                    <select class="form-select" formControlName="mode">
+                      @for (m of modes; track m) { <option [value]="m">{{ m }}</option> }
+                    </select>
+                  </div>
+                  <div class="col-6">
+                    <label class="form-label">Reference No.</label>
+                    <input class="form-control font-mono" formControlName="referenceNo"
+                           placeholder="UPI/NEFT reference (optional)">
+                  </div>
+                </div>
+              </fieldset>
+
+              @if (canPost()) {
+                <button type="submit" class="btn btn-primary w-100" [disabled]="posting()">
+                  @if (posting()) {
+                    <span class="spinner-border spinner-border-sm me-2"></span>Posting…
+                  } @else {
+                    <i class="bi bi-cash-coin me-2"></i>Post Repayment
+                  }
+                </button>
+              } @else {
+                <button type="button" class="btn btn-secondary w-100" disabled>
+                  <i class="bi bi-lock me-2"></i>Post Repayment (Access Restricted)
+                </button>
+              }
+            </form>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  }
+
+  <!-- ══ Tab 1: Payment History ═══════════════════════════════════════ -->
+  @if (tab() === 1) {
+    <div class="card mb-3">
+      <div class="card-body d-flex gap-3 align-items-flex-end flex-wrap">
+        <div style="flex:1;min-width:200px;">
+          <label class="form-label">Loan Account ID</label>
+          <input type="number" class="form-control font-mono" [(ngModel)]="loanAccId"
+                 placeholder="Enter loan account ID">
+        </div>
+        <button class="btn btn-primary" (click)="loadHistory()" [disabled]="loadingList() || !loanAccId">
+          @if (loadingList()) { <span class="spinner-border spinner-border-sm me-1"></span> }
+          @else { <i class="bi bi-search me-1"></i> }
+          Load History
+        </button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header d-flex align-items-center justify-content-between">
+        <span class="fw-bold d-flex align-items-center gap-2" style="font-family:var(--fs-font-head);color:#0f766e;">
+          <i class="bi bi-clock-history"></i> Payment History
+          @if (loanAccId) { <span class="text-muted fw-normal">— Loan #{{ loanAccId }}</span> }
+        </span>
+        <input class="form-control form-control-sm" style="max-width:200px;"
+               [(ngModel)]="repaySearch" (input)="onRepaySearch()"
+               placeholder="Search ref # or amount…">
+      </div>
+
+      @if (loadingList()) {
+        <div class="d-flex justify-content-center py-5">
+          <span class="spinner-border text-primary"></span>
+        </div>
+      } @else if (!hasSearched()) {
+        <div class="d-flex flex-column align-items-center justify-content-center text-muted py-5 gap-2">
+          <i class="bi bi-search" style="font-size:2rem;opacity:.25;"></i>
+          <p>Enter a loan account ID and click <strong>Load History</strong></p>
+        </div>
+      } @else if (repayments().length === 0) {
+        <div class="d-flex align-items-center gap-3 p-4 text-muted">
+          <i class="bi bi-inbox" style="font-size:2rem;opacity:.25;"></i>
+          <div>
+            <p class="fw-semibold mb-0">No repayments found</p>
+            <p class="small mb-0">No payment records for Loan Account <span class="font-mono">#{{ loanAccId }}</span></p>
+          </div>
+        </div>
+      } @else {
+        <div class="table-responsive">
+          <table class="table table-hover align-middle mb-0">
+            <thead>
+              <tr>
+                <th>#ID</th><th>Loan Acc</th><th>Amount</th>
+                <th>Mode</th><th>Reference</th><th>Date</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (r of pgRepayments.paged(); track r.repaymentId) {
+                <tr>
+                  <td class="font-mono fw-bold" style="color:var(--bs-primary);">#{{ r.repaymentId }}</td>
+                  <td class="font-mono text-muted">#{{ r.loanAccountId }}</td>
+                  <td class="font-mono fw-bold" style="color:#10b981;">₹{{ r.amount | number:'1.2-2' }}</td>
+                  <td><span class="badge-status bs-draft">{{ r.mode }}</span></td>
+                  <td class="font-mono" style="font-size:.8rem;">{{ r.referenceNo || '—' }}</td>
+                  <td style="font-size:.8rem;">{{ r.paymentDate | date:'dd MMM yyyy' }}</td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+        <app-paginator [pg]="pgRepayments"></app-paginator>
+        <div class="px-3 py-2 border-top d-flex justify-content-between"
+             style="background:#f0fdfa;font-size:.75rem;color:#0f766e;">
+          <span>{{ repayments().length }} repayment(s) found</span>
+        </div>
+      }
+    </div>
+  }
+</div>
+=====================================================================
+import { Component, OnInit, signal, inject, computed } from '@angular/core';
+import { paginate } from '../../core/services/pagination.service';
+import { PaginatorComponent } from '../../shared/paginator/paginator.component';
+import { CommonModule } from '@angular/common';
+import { FormsModule, FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
+import { ApiService } from '../../core/services/api.service';
+import { ToastService } from '../../core/services/toast.service';
+import { AuthService } from '../../core/services/auth.service';
+import { RepayResponse, RepayMode } from '../../core/models';
+
+@Component({
+  selector: 'app-repayments',
+  standalone: true,
+  imports: [CommonModule, FormsModule, ReactiveFormsModule, PaginatorComponent],
+  templateUrl: './repayments.component.html'
+})
+export class RepaymentsComponent implements OnInit {
+  private api  = inject(ApiService);
+  private fb   = inject(FormBuilder);
+  private toast = inject(ToastService);
+  readonly auth = inject(AuthService);
+
+  tab         = signal(0);
+  repayments  = signal<RepayResponse[]>([]);
+  loadingList = signal(false);
+  hasSearched = signal(false);
+  posting     = signal(false);
+  loanAccId   = 0;
+
+  /** EMI schedule for quick-pay — loaded when loanAccountId is entered */
+  schedule    = signal<import('../../core/models').ScheduleResponse[]>([]);
+  scheduleLoading = signal(false);
+  selectedScheduleId = signal<number | null>(null);
+
+  modes: RepayMode[] = ['UPI','NEFT','IMPS','RTGS','CASH','OTHER'];
+
+  /** True when the logged-in user can post repayments (SERVICING or OPERATIONS) */
+  canPost = computed(() => {
+    const role = this.auth.userRole();
+    return role === 'SERVICING' || role === 'OPERATIONS' || role === 'ADMIN';
+  });
+
+  postForm = this.fb.group({
+    loanAccountId: [null as number | null, [Validators.required, Validators.min(1)]],
+    scheduleId:    [null as number | null],  // optional — auto-fills amount
+    amount:        [null as number | null, [Validators.min(0.01)]],
+    mode:          ['UPI', Validators.required],
+    referenceNo:   [''],
+    paymentDate:   [new Date().toISOString().split('T')[0], Validators.required],
+  });
+  get pf() { return this.postForm.controls; }
+
+  /** Load EMI schedule for the entered loan account */
+  loadSchedule(): void {
+    const accId = this.pf['loanAccountId'].value;
+    if (!accId || accId < 1) { this.schedule.set([]); return; }
+    this.scheduleLoading.set(true);
+    this.api.getSchedule(accId).subscribe({
+      next: r => { this.schedule.set((r.data ?? []).filter((s: any) => s.status !== 'PAID')); this.scheduleLoading.set(false); },
+      error: () => { this.schedule.set([]); this.scheduleLoading.set(false); }
+    });
+  }
+
+  /** Select a schedule row — auto-fills amount from balanceDue */
+  selectSchedule(s: import('../../core/models').ScheduleResponse): void {
+    this.selectedScheduleId.set(s.scheduleId);
+    this.pf['scheduleId'].setValue(s.scheduleId);
+    this.pf['amount'].setValue(s.balanceDue ?? s.totalDue);
+  }
+
+  clearSchedule(): void {
+    this.selectedScheduleId.set(null);
+    this.pf['scheduleId'].setValue(null);
+    this.pf['amount'].setValue(null);
+  }
+
+  repaySearch = '';
+  filteredRepayments = computed(() => {
+    const q = this.repaySearch.trim().toLowerCase();
+    return q ? this.repayments().filter(r =>
+      (r.referenceNo||'').toLowerCase().includes(q) ||
+      String(r.amount||'').includes(q)
+    ) : this.repayments();
+  });
+  pgRepayments = paginate(() => this.filteredRepayments());
+  onRepaySearch() { this.pgRepayments.reset(); }
+
+  ngOnInit(): void { /* nothing to pre-load */ }
+
+  loadHistory(): void {
+    if (!this.loanAccId) return;
+    this.loadingList.set(true);
+    this.hasSearched.set(true);
+    this.api.listRepayments(this.loanAccId).subscribe({
+      next: r  => { this.repayments.set(r.data ?? []); this.loadingList.set(false); },
+      error: () => this.loadingList.set(false)
+    });
+  }
+
+  post(): void {
+    this.postForm.markAllAsTouched();
+    if (this.postForm.invalid) return;
+    this.posting.set(true);
+    const v = this.postForm.value;
+    const accId = v.loanAccountId!;
+    this.api.postRepayment({
+      loanAccountId: accId,
+      scheduleId:    v.scheduleId ?? undefined,
+      amount:        v.scheduleId ? undefined : v.amount!,  // auto when scheduleId given
+      mode:          v.mode as RepayMode,
+      referenceNo:   v.referenceNo || undefined,
+      paymentDate:   v.paymentDate || new Date().toISOString().split('T')[0]
+    }).subscribe({
+      next: r => {
+        this.posting.set(false);
+        // Fix: reset entire form then restore defaults so validators don't fire
+        this.postForm.reset({
+          loanAccountId: accId,             // keep loan account for convenience
+          amount:        null,
+          mode:          'UPI',
+          referenceNo:   '',
+          paymentDate:   new Date().toISOString().split('T')[0]
+        });
+        this.postForm.markAsUntouched();    // ← prevents spurious validation errors
+        this.postForm.markAsPristine();
+        this.selectedScheduleId.set(null);
+        this.schedule.update(s => s.filter(row => row.scheduleId !== v.scheduleId));
+        if (this.loanAccId === accId) {
+          this.repayments.update(l => [r.data, ...l]);
+        }
+        this.toast.success('Repayment Posted',
+          `₹${r.data.amount.toLocaleString('en-IN')} posted · Ref: ${r.data.referenceNo ?? 'N/A'}`);
+      },
+      error: e => {
+        this.posting.set(false);
+        this.toast.error('Post Failed', e?.error?.message ?? 'Unable to post repayment');
+      }
+    });
+  }
+}
+repayemnts.co ponent.ts
+====================================================
